@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>SentinelAI</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        min-width: 320px;
+        padding: 12px;
+        margin: 0;
+      }
+      .status { font-weight: 600; margin-bottom: 10px; }
+      .result-box {
+        display: none;
+        background: #f7f7f7;
+        border: 1px solid #d0d0d0;
+        border-radius: 8px;
+        padding: 10px;
+        margin-top: 12px;
+      }
+      .result-box.visible { display: block; }
+      .meta { font-size: 12px; color: #555; word-break: break-word; }
+      .label { font-weight: 700; }
+      .action { font-weight: 700; color: #0b5; }
+      .warn { color: #c26b00; }
+      .danger { color: #b42318; }
+      button {
+        width: 100%;
+        padding: 10px;
+        border: none;
+        border-radius: 6px;
+        background: #0b57d0;
+        color: white;
+        font-weight: 600;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <h3>SentinelAI Runtime</h3>
+    <div class="status">Status: Monitoring</div>
+    <button id="analyze">Analyze page</button>
+
+    <div id="resultBox" class="result-box">
+      <div><span class="label">URL:</span> <span id="resultUrl" class="meta"></span></div>
+      <div><span class="label">Decision:</span> <span id="resultAction" class="action"></span></div>
+      <div><span class="label">Overall Trust:</span> <span id="resultTrust"></span></div>
+      <div><span class="label">Confidence:</span> <span id="resultConfidence"></span></div>
+      <div><span class="label">Threat:</span> <span id="resultThreat"></span></div>
+      <div><span class="label">Evidence:</span> <span id="resultEvidence" class="meta"></span></div>
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
