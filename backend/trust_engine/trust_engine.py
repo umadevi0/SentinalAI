@@ -44,11 +44,14 @@ class TrustEngine:
     BLOCK_RULES = [
         {'all': ['credential_submission_mismatch'], 'confidence': 0.95, 'label': 'credential_submission_mismatch'},
         {'all': ['credential_submission_mismatch', 'brand_impersonation'], 'confidence': 0.97, 'label': 'branded_credential_theft'},
-        {'all': ['form_action_domain_mismatch', 'password_field_present'], 'confidence': 0.92, 'label': 'login_form_exfiltrates'},
         {'all': ['brand_impersonation', 'form_action_domain_mismatch'], 'confidence': 0.9, 'label': 'brand_impersonation'},
         {'all': ['hidden_login_form', 'brand_impersonation'], 'confidence': 0.93, 'label': 'hidden_branded_login'},
         {'all': ['hidden_login_form', 'credentials_on_unknown_target'], 'confidence': 0.9, 'label': 'hidden_credential_form'},
         {'all': ['credential_submission_mismatch', 'hidden_login_form'], 'confidence': 0.96, 'label': 'hidden_credential_exfil'},
+        {'all': ['form_action_domain_mismatch', 'obfuscated_content', 'hidden_elements_count'],
+         'confidence': 0.88, 'label': 'cloaked_cross_domain_form'},
+        {'all': ['form_action_domain_mismatch', 'unknown_tld', 'obfuscated_content'],
+         'confidence': 0.86, 'label': 'cloaked_cross_domain_form_tld'},
     ]
 
     # Scenarios that are clearly worth a deep (stage-2) look but not a block.
@@ -58,6 +61,10 @@ class TrustEngine:
         {'all': ['credentials_on_unknown_target'], 'label': 'credentials_on_unknown_target'},
         {'all': ['punycode_homoglyph', 'password_field_present'], 'label': 'punycode_credentials'},
         {'all': ['lookalike_brand_domain', 'password_field_present'], 'label': 'lookalike_login'},
+        {'all': ['form_action_domain_mismatch', 'password_field_present'], 'label': 'login_form_exfiltrates_deep'},
+        {'all': ['form_action_domain_mismatch', 'obfuscated_content'], 'label': 'cross_domain_obfuscated_form'},
+        {'all': ['form_action_domain_mismatch', 'hidden_elements_count'], 'label': 'cross_domain_hidden_form'},
+        {'all': ['form_action_domain_mismatch', 'unknown_tld'], 'label': 'cross_domain_unknown_tld'},
     ]
 
     # Protective features that reduce conviction even when other weak signals fire.
@@ -168,6 +175,7 @@ class TrustEngine:
                 critical = feats.intersection({
                     'hidden_login_form', 'credentials_on_unknown_target',
                     'lookalike_brand_domain', 'lookalike_domain',
+                    'form_action_domain_mismatch',
                 })
                 if exculpatory and not critical:
                     overall = max(overall, 0.78)

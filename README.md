@@ -1,64 +1,47 @@
 # SentinelAI
 
-SentinelAI is a browser security runtime scaffold that includes a browser extension runtime and a FastAPI backend. This repository is prepared for testing and deployment; the README below explains how to set up a clean local environment and publish the project to GitHub.
+SentinelAI is a browser security runtime scaffold aligned to the PDF specification.
 
 ## Project layout
 
-- `browser-extension/` — Chrome/Edge extension (Manifest V3)
-- `backend/` — FastAPI backend (orchestrator, trust engine, evidence engine, response engine, logging)
+- `browser-extension/` – Chrome/Edge extension runtime (Manifest V3)
+- `backend/` – FastAPI backend with orchestrator, trust engine, evidence engine, response engine, and logging
 
-## Quick start (recommended)
+## Backend manual run
 
-1. Create a Python virtual environment (recommended name `.venv`):
-
-```powershell
-cd D:\SentinalAI\SentinalAI
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
-
-2. Run the backend with Uvicorn (from repository root):
+Use this exact sequence from PowerShell:
 
 ```powershell
-cd D:\SentinalAI\SentinalAI
-uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
+cd D:\SentinalAI
+.\.venv313\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv313\Scripts\python.exe -m uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 ```
 
-3. Verify health endpoint:
+## Health check
 
 ```powershell
-Invoke-WebRequest http://127.0.0.1:8000/health | Select-Object -Expand Content
+cd D:\SentinalAI
+.\.venv313\Scripts\python.exe -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/health').read().decode())"
 ```
 
-4. Run the local smoke test:
+## End-to-end smoke test
 
 ```powershell
-cd D:\SentinalAI\SentinalAI
-python quick_check.py
+cd D:\SentinalAI
+.\.venv313\Scripts\python.exe quick_check.py
 ```
 
-## Browser extension (development)
+## Browser extension manual load
 
-1. Open Chrome/Edge.
+1. Open Chrome or Edge.
 2. Go to `chrome://extensions` or `edge://extensions`.
-3. Enable Developer mode → Load unpacked → select `browser-extension/` folder.
+3. Enable Developer mode.
+4. Click Load unpacked.
+5. Select the `browser-extension/` folder.
 
-## Preparing this repository for GitHub
+## Expected backend response
 
-- This project already contains a `.gitignore` with common ignores. Before publishing, ensure you do not commit local virtual environments or log files. The provided `.gitignore` excludes typical items like `.venv/`, `.env`, and `sentinelai_logs.jsonl`.
-- If you created this repository by copying files into an existing GitHub repository, run a `git fetch` + `git pull` to merge the remote README, then push your local commits.
+The smoke test should return:
 
-## Notes for CI / testing on remote sites
-
-- Keep secrets out of the repository — use environment variables or GitHub Secrets for credentials.
-- The `backend` expects the local environment variables to be set when running integration tests; add a `.env.sample` file with example keys (do not commit real values).
-
-## Troubleshooting
-
-- If your push is rejected due to an existing remote README, do a `git pull origin main --allow-unrelated-histories --no-edit` then push.
-- If you plan to publish this folder as the repository root, ensure the inner `.git` folder (if present) is the intended repository; otherwise remove it and initialize a new git repo in `D:/SentinalAI/SentinalAI`.
-
-## License
-
-This project is licensed under the MIT License — see `LICENSE`.
+- `EVENTS {"status":"accepted","count":1}`
+- `ANALYZE` with a trust profile, decision, and response payload

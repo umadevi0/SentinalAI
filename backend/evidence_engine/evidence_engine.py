@@ -102,7 +102,7 @@ def registrable_info(labels):
     suffix = '.'.join(labels[-public_parts:])
     reg_lbl = labels[-public_parts - 1] if len(labels) > public_parts else (labels[-1] if labels else '')
     sub_count = max(0, len(labels) - public_parts - 1)
-    public_sector = (suffix in KNOWN_PUBLIC_SUFFIXES) or (labels[-1] in {'edu', 'gov', 'mil'})
+    public_sector = (suffix in KNOWN_PUBLIC_SUFFIXES) or (labels[-1] in {'edu', 'gov', 'mil', 'org'})
     return reg_lbl, sub_count, suffix, public_sector
 
 # High-value brands used for brand impersonation detection.
@@ -361,6 +361,11 @@ class ThreatEvidenceEngine:
         )
 
         # ---- build structured detectors -------------------------------------
+        # Weak behavioral signals (hidden elements, external scripts, obfuscated
+        # content) are common on legitimate sites, so they only count against
+        # the page when the host is NOT already covered by protective context
+        # (known domain / public-sector infrastructure).
+        hidden_behavior_ctx = not known_domain and not public_sector
         detectors: List[Dict[str, Any]] = []
 
         def add(feature, category, value, severity='low', confidence=0.5,
@@ -435,31 +440,31 @@ class ThreatEvidenceEngine:
 
         # ---- credential flow (strongest) -------------------------------------
         add('form_action_domain_mismatch', 'identity', bool(form_action_mismatch),
-            'high' if form_action_mismatch else 'low',
-            0.9 if form_action_mismatch else 0.1, 'high',
-            0.9 if form_action_mismatch else 0.1)
+            'medium' if form_action_mismatch else 'low',
+            0.6 if form_action_mismatch else 0.1, 'medium',
+            0.45 if form_action_mismatch else 0.1)
         add('credential_submission_mismatch', 'identity', bool(cred_mismatch),
             'critical' if cred_mismatch else 'low',
             0.95 if cred_mismatch else 0.1, 'very_high',
             0.95 if cred_mismatch else 0.1)
 
         # ---- behavior --------------------------------------------------------
-        add('hidden_elements_count', 'behavior', hidden_elements >= 8,
-            'high' if hidden_elements >= 8 else 'low',
-            0.6 if hidden_elements >= 8 else 0.1, 'medium',
-            min(0.7, 0.4 + hidden_elements * 0.02) if hidden_elements >= 8 else 0.1)
-        add('external_script_count', 'behavior', external_scripts >= 14,
-            'medium' if external_scripts >= 14 else 'low',
-            0.5 if external_scripts >= 14 else 0.1, 'low',
-            min(0.6, 0.35 + external_scripts * 0.015) if external_scripts >= 14 else 0.1)
+        add('hidden_elements_count', 'behavior', hidden_elements >= 8 and hidden_behavior_ctx,
+            'high' if (hidden_elements >= 8 and hidden_behavior_ctx) else 'low',
+            0.6 if (hidden_elements >= 8 and hidden_behavior_ctx) else 0.1, 'medium',
+            min(0.7, 0.4 + hidden_elements * 0.02) if (hidden_elements >= 8 and hidden_behavior_ctx) else 0.1)
+        add('external_script_count', 'behavior', external_scripts >= 14 and hidden_behavior_ctx,
+            'medium' if (external_scripts >= 14 and hidden_behavior_ctx) else 'low',
+            0.5 if (external_scripts >= 14 and hidden_behavior_ctx) else 0.1, 'low',
+            min(0.6, 0.35 + external_scripts * 0.015) if (external_scripts >= 14 and hidden_behavior_ctx) else 0.1)
         add('hidden_login_form', 'behavior', hidden_login_form,
             'high' if hidden_login_form else 'low',
             0.9 if hidden_login_form else 0.1, 'high',
             0.9 if hidden_login_form else 0.1)
-        add('obfuscated_content', 'behavior', obfuscated,
-            'high' if obfuscated else 'low',
-            0.7 if obfuscated else 0.1, 'medium',
-            0.6 if obfuscated else 0.1)
+        add('obfuscated_content', 'behavior', obfuscated and hidden_behavior_ctx,
+            'medium' if (obfuscated and hidden_behavior_ctx) else 'low',
+            0.6 if (obfuscated and hidden_behavior_ctx) else 0.1, 'medium',
+            0.5 if (obfuscated and hidden_behavior_ctx) else 0.1)
         add('excessive_iframes', 'behavior', iframes >= 4,
             'medium' if iframes >= 4 else 'low',
             0.5 if iframes >= 4 else 0.1, 'low',
@@ -504,7 +509,12 @@ class ThreatEvidenceEngine:
         if any(d['feature'] in ('credential_submission_mismatch',) and d['value'] for d in triggered):
             threat_category = 'phishing'
             severity = 'critical'
-        elif any(d['feature'] in ('brand_impersonation', 'form_action_domain_mismatch', 'hidden_login_form') and bool(d['value']) for d in triggered):
+        elif any(d['feature'] in ('brand_impersonation', 'hidden_login_form') and bool(d['value']) for d in triggered):
+            threat_category = 'phishing'
+            severity = 'high'
+        elif (any(d['feature'] == 'form_action_domain_mismatch' and bool(d['value']) for d in triggered)
+              and any(d['feature'] in ('obfuscated_content', 'hidden_elements_count', 'unknown_tld')
+                      and bool(d['value']) for d in triggered)):
             threat_category = 'phishing'
             severity = 'high'
         elif any(d['category'] == 'privacy' and bool(d['value']) for d in triggered):

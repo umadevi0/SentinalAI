@@ -10,6 +10,25 @@ from typing import Any, Dict
 
 
 class AdaptiveThreatOrchestrator:
+    # Deterministic high-severity evidence that a weak/uncalibrated ML
+    # score must never downgrade to 'allow'.
+    CRITICAL_FEATURES = {
+        'credential_submission_mismatch', 'brand_impersonation',
+        'hidden_login_form', 'credentials_on_unknown_target',
+        'form_action_domain_mismatch', 'lookalike_brand_domain',
+        'lookalike_domain', 'punycode_homoglyph',
+    }
+
+    @staticmethod
+    def _critical_features(evidence: Dict[str, Any]) -> set:
+        feats = set()
+        for d in evidence.get('detectors') or []:
+            if (d.get('polarity', 'positive') == 'positive'
+                    and d.get('value') and d['value'] is not False
+                    and d['value'] != 0):
+                feats.add(d.get('feature', ''))
+        return feats & AdaptiveThreatOrchestrator.CRITICAL_FEATURES
+
     def decide(self, evidence: Dict[str, Any],
                trust_profile: Dict[str, Any],
                metadata: Dict[str, Any] | None = None,
@@ -37,15 +56,18 @@ class AdaptiveThreatOrchestrator:
                                                   metadata or {})
                 except Exception:
                     ml_prob = None
+            critical = self._critical_features(evidence)
             if ml_prob is not None:
                 if ml_prob >= 0.75:
                     action = 'block'
                     ph_conf = max(ph_conf, ml_prob)
-                elif ml_prob < 0.35:
+                elif ml_prob < 0.35 and not critical:
                     action = 'allow'
                     ph_conf = min(ph_conf, ml_prob)
                 else:
                     action = 'warn'
+                    if critical:
+                        ph_conf = max(ph_conf, 0.55)
             else:
                 action = 'warn'
         elif decision == 'monitor':

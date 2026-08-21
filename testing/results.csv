@@ -1,0 +1,4 @@
+url,page_status,decision,trust,confidence,ml_probability,threat,stage,certainty,evidence,latency_ms,cpu_usage,memory_usage_mb,bandwidth_kb,predicted,actual
+https://example.com,opened_ok,continue_monitoring,1.0,0.0,,safe,1,high,no_suspicious_signals_detected,2.343,43.8,108.5,190.9,1,legit
+https://www.wikipedia.org,opened_ok,continue_monitoring,1.0,0.0,,safe,1,high,no_suspicious_signals_detected,0.75,68.4,109.0,1282.4,1,legit
+https://github.com/login,opened_ok,continue_monitoring,0.94,0.155,,suspicious,1,high,password_field_present;login_intent,0.513,27.2,118.8,1329.6,1,legit
