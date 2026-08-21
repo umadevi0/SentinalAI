@@ -15,6 +15,11 @@ Input CSV
     (digit convention matches the output: 1 = legit, 0 = phishing)
 
 Output CSV  (testing/results.csv, overwritten each run)
+    Only pages that loaded cleanly (opened_ok) get a row. Any failure -
+    dns/connection/certificate/blocked/timeout AND any HTTP error status
+    (4xx/5xx like 404 or 503) - is skipped with a console note and appears
+    nowhere in the CSV.
+    Columns:
     url, page_status, decision, trust, confidence, ml_probability, threat,
     stage, certainty, evidence, latency_ms,
     cpu_usage, memory_usage_mb, bandwidth_kb,
@@ -61,6 +66,13 @@ RESULT_COLUMNS = [
     'cpu_usage', 'memory_usage_mb', 'bandwidth_kb',
     'predicted', 'actual',
 ]
+
+# Page never actually loaded -> no result row is written for these.
+LOAD_FAILURE_STATUSES = {
+    'dns_error', 'connection_error', 'security_error_certificate',
+    'security_warning_safebrowsing', 'browser_blocked', 'timeout',
+    'other_error',
+}
 
 URL_HEADER_HINTS = {'url', 'urls', 'link', 'links', 'website', 'site', 'address'}
 LABEL_HEADER_HINTS = {'label', 'labels', 'actual', 'actual_answer', 'ground_truth',
@@ -183,8 +195,7 @@ INTERSTITIAL_MARKERS = [
 ]
 
 ERR_MAP = [
-    (('ERR_NAME_NOT_RESOLVED', 'ERR_DNS'), 'dns_error'),
-    (('ERR_CERT_', 'ERR_SSL', 'ERR_HTTPS', 'ERR_SSL_PROTOCOL_ERROR',
+    (('ERR_NAME_NOT_RESOLVED', 'ERR_DNS'), 'dns_error'),    (('ERR_CERT_', 'ERR_SSL', 'ERR_HTTPS', 'ERR_SSL_PROTOCOL_ERROR',
       'ERR_PROXY_CERTIFICATE'), 'security_error_certificate'),
     (('ERR_BLOCKED_BY_ADMINISTRATOR', 'ERR_ACCESS_DENIED', 'ERR_BLOCKED_BY_CLIENT',
       'ERR_BLOCKED_BY_RESPONSE', 'ERR_BLOCKED_BY_ORB', 'ERR_BLOCKED_AS_INSECURE'),
@@ -454,15 +465,14 @@ def worker(base_url, task_q, result_q, nav_timeout_ms):
                 pass
 
 
-def writer_thread(csv_path, result_q, done_evt, total, workers):
+def writer_thread(csv_path, result_q, done_evt, workers, stats):
     os.makedirs(os.path.dirname(csv_path), exist_ok=True)
     with open(csv_path, 'w', newline='', encoding='utf-8') as f:
         w = csv.DictWriter(f, fieldnames=RESULT_COLUMNS)
         w.writeheader()
         f.flush()
-        written = 0
         idle = 0
-        while written < total:
+        while True:
             try:
                 row = result_q.get(timeout=1)
                 idle = 0
@@ -475,9 +485,15 @@ def writer_thread(csv_path, result_q, done_evt, total, workers):
             if not isinstance(row, dict) or not row.get('url'):
                 print(f'[writer] discarding invalid row: {row!r}', file=sys.stderr)
                 continue
+            if (row.get('page_status') in LOAD_FAILURE_STATUSES
+                    or str(row.get('page_status', '')).startswith('http_error')):
+                stats['skipped'] += 1
+                print(f"[writer] no result kept - page did not load: "
+                      f"{row['url']} ({row['page_status']})", file=sys.stderr)
+                continue
             w.writerow({k: row.get(k, '') for k in RESULT_COLUMNS})
             f.flush()
-            written += 1
+            stats['written'] += 1
         done_evt.set()
 
 
@@ -496,8 +512,9 @@ def run_backend(name, items, has_labels, workers_count, nav_timeout_ms, csv_path
             procs.append(pr)
 
         done_evt = threading.Event()
+        stats = {'written': 0, 'skipped': 0}
         wr = threading.Thread(target=writer_thread,
-                              args=(csv_path, result_q, done_evt, len(items), procs),
+                              args=(csv_path, result_q, done_evt, procs, stats),
                               daemon=True)
         wr.start()
 
@@ -526,7 +543,8 @@ def run_backend(name, items, has_labels, workers_count, nav_timeout_ms, csv_path
                             correct += 1
     except OSError:
         pass
-    line = f'[{name}] done -> {csv_path} ({summary}/{len(items)} analyzed'
+    line = (f'[{name}] done -> {csv_path} ({summary}/{len(items)} analyzed'
+            f' | {stats["skipped"]} not loaded -> no result')
     if has_labels and summary:
         line += f' | agreement with actual: {correct}/{summary}'
     print(line + ')')
