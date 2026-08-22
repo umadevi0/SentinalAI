@@ -52,6 +52,9 @@ class TrustEngine:
          'confidence': 0.88, 'label': 'cloaked_cross_domain_form'},
         {'all': ['form_action_domain_mismatch', 'unknown_tld', 'obfuscated_content'],
          'confidence': 0.86, 'label': 'cloaked_cross_domain_form_tld'},
+        {'all': ['phish_kit_url'], 'confidence': 0.95, 'label': 'phish_kit_url'},
+        {'all': ['brand_in_path', 'password_field_present'], 'confidence': 0.93, 'label': 'brand_path_credential_harvest'},
+        {'all': ['brand_in_path', 'form_action_domain_mismatch'], 'confidence': 0.92, 'label': 'brand_path_cross_form'},
     ]
 
     # Scenarios that are clearly worth a deep (stage-2) look but not a block.
@@ -65,6 +68,20 @@ class TrustEngine:
         {'all': ['form_action_domain_mismatch', 'obfuscated_content'], 'label': 'cross_domain_obfuscated_form'},
         {'all': ['form_action_domain_mismatch', 'hidden_elements_count'], 'label': 'cross_domain_hidden_form'},
         {'all': ['form_action_domain_mismatch', 'unknown_tld'], 'label': 'cross_domain_unknown_tld'},
+        {'all': ['brand_in_path'], 'label': 'brand_in_path'},
+        {'all': ['lookalike_brand_domain'], 'label': 'lookalike_brand_alone'},
+        {'all': ['obfuscated_content', 'login_intent'], 'label': 'cloaked_login_page'},
+        {'all': ['obfuscated_content', 'hidden_elements_count'], 'label': 'obfuscated_hidden_page'},
+        {'all': ['obfuscated_content', 'excessive_iframes'], 'label': 'obfuscated_iframe_page'},
+        {'all': ['hidden_elements_count', 'login_intent'], 'label': 'hidden_elements_login'},
+        {'all': ['promo_scam_keywords'], 'label': 'promo_scam_page'},
+        {'all': ['credential_path_keywords', 'login_intent'], 'label': 'credential_path_login'},
+        {'all': ['url_shortener_host', 'external_script_count'], 'label': 'shortener_heavy_scripts'},
+        {'all': ['free_hosting_subdomain', 'login_intent'], 'label': 'freehost_login'},
+        {'all': ['free_hosting_subdomain', 'password_field_present'], 'label': 'freehost_credentials'},
+        {'all': ['url_shortener_host', 'login_intent'], 'label': 'shortener_login'},
+        {'all': ['url_shortener_host', 'suspicious_path'], 'label': 'shortener_suspicious_path'},
+        {'all': ['url_shortener_host', 'password_field_present'], 'label': 'shortener_credentials'},
     ]
 
     # Protective features that reduce conviction even when other weak signals fire.
@@ -176,6 +193,7 @@ class TrustEngine:
                     'hidden_login_form', 'credentials_on_unknown_target',
                     'lookalike_brand_domain', 'lookalike_domain',
                     'form_action_domain_mismatch',
+                    'brand_in_path', 'phish_kit_url',
                 })
                 if exculpatory and not critical:
                     overall = max(overall, 0.78)

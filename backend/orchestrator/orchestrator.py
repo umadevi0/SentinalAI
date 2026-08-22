@@ -17,6 +17,18 @@ class AdaptiveThreatOrchestrator:
         'hidden_login_form', 'credentials_on_unknown_target',
         'form_action_domain_mismatch', 'lookalike_brand_domain',
         'lookalike_domain', 'punycode_homoglyph',
+        'brand_in_path', 'phish_kit_url',
+    }
+
+    # Feature *combinations* that are critical even though each feature alone
+    # is weak (these are exactly the combos the Trust Engine escalates to deep
+    # analysis). All are gated on unprotected hosts by the evidence engine,
+    # so benign big-brand sites can never match them.
+    CRITICAL_COMBOS = {
+        frozenset({'obfuscated_content', 'login_intent'}),
+        frozenset({'obfuscated_content', 'hidden_elements_count'}),
+        frozenset({'hidden_elements_count', 'login_intent'}),
+        frozenset({'promo_scam_keywords', 'free_hosting_subdomain'}),
     }
 
     @staticmethod
@@ -27,7 +39,11 @@ class AdaptiveThreatOrchestrator:
                     and d.get('value') and d['value'] is not False
                     and d['value'] != 0):
                 feats.add(d.get('feature', ''))
-        return feats & AdaptiveThreatOrchestrator.CRITICAL_FEATURES
+        crit = feats & AdaptiveThreatOrchestrator.CRITICAL_FEATURES
+        for combo in AdaptiveThreatOrchestrator.CRITICAL_COMBOS:
+            if combo <= feats:
+                crit |= combo
+        return crit
 
     def decide(self, evidence: Dict[str, Any],
                trust_profile: Dict[str, Any],

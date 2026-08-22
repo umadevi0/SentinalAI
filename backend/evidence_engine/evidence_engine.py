@@ -33,6 +33,11 @@ KNOWN_DOMAINS = {
     'hsbc', 'barclays', 'santander', 'ing', 'revolut', 'wise', 'payoneer',
     'ebay', 'etsy', 'alibaba', 'flipkart', 'taobao', 'jd', 'rakuten',
     'baidu', 'qq', 'taobao', 'weibo', 'alipay', 'tencent', 'sina',
+    # LatAm / Brazil majors (frequent phishing targets, own their promos)
+    'americanas', 'magazineluiza', 'casasbahia', 'mercadolivre',
+    'mercadolibre', 'mercado', 'picpay', 'nubank', 'itau', 'bradesco',
+    'bancodobrasil', 'caixa', 'santander', 'submarino', 'shoptime',
+    'pontofrio', 'webmotors', 'olx', 'decolar', 'airbnb', 'booking',
 }
 
 # Common / known TLDs. A host whose TLD is absent here is a strong identity
@@ -45,6 +50,7 @@ KNOWN_TLDS = {
     'it', 'nl', 'se', 'no', 'ch', 'at', 'be', 'dk', 'fi', 'ie', 'pt', 'pl',
     'cz', 'sk', 'hu', 'gr', 'tr', 'mx', 'ar', 'co', 'za', 'ng', 'ae', 'sa',
     'il', 'sg', 'hk', 'tw', 'kr', 'my', 'th', 'vn', 'ph', 'id', 'pk', 'bd',
+    'is', 'ly', 'gd', 'to', 'so',  # common shortener / infra ccTLDs
     'github.io', 'blogspot.com', 'wordpress.com', 'wixsite.com', 'pages.dev',
     'netlify.app', 'vercel.app', 'onrender.com', 'my.id', 'co.id', 'com.br',
 }
@@ -60,6 +66,7 @@ KNOWN_PUBLIC_SUFFIXES = {
     'co.nz', 'org.nz', 'ac.nz', 'govt.nz', 'net.nz', 'geek.nz',
     'co.jp', 'ac.jp', 'go.jp', 'or.jp', 'ne.jp', 'gr.jp',
     'com.br', 'com.mx', 'com.ar', 'com.co', 'com.pe',
+    'gov.br', 'edu.br', 'mil.br',
     'co.il', 'org.il', 'ac.il', 'gov.il', 'muni.il',
     'co.za', 'org.za', 'ac.za', 'gov.za', 'net.za',
     'com.tr', 'org.tr', 'edu.tr', 'gov.tr', 'net.tr',
@@ -88,6 +95,95 @@ KNOWN_PUBLIC_SUFFIXES = {
     'gov.in', 'nic.in',
 }
 
+# Suffixes reserved by their registries for government / academic institutions
+# ONLY (registrations are restricted). These legitimately host credential
+# pages, so they suppress impersonation heuristics. Commercial suffixes like
+# com.au / co.uk / com.br must NOT appear here even though they are multi-part
+# public suffixes used for registrable-domain extraction above.
+PUBLIC_SECTOR_SUFFIXES = {
+    # India
+    'gov.in', 'edu.in', 'mil.in', 'nic.in', 'ac.in', 'res.in',
+    # Brazil
+    'gov.br', 'edu.br', 'mil.br',
+    # United Kingdom
+    'gov.uk', 'ac.uk',
+    # Australia
+    'gov.au', 'edu.au',
+    # New Zealand
+    'govt.nz', 'ac.nz',
+    # Japan
+    'go.jp', 'ac.jp',
+    # Israel
+    'gov.il', 'ac.il', 'muni.il',
+    # South Africa
+    'gov.za', 'ac.za',
+    # Turkey
+    'edu.tr', 'gov.tr',
+    # Singapore / Malaysia
+    'edu.sg', 'gov.sg', 'edu.my', 'gov.my',
+    # China
+    'edu.cn', 'gov.cn',
+    # Indonesia
+    'ac.id', 'go.id',
+    # Taiwan / Hong Kong
+    'edu.tw', 'gov.tw', 'edu.hk', 'gov.hk',
+    # Korea
+    'ac.kr', 'go.kr', 're.kr',
+    # Vietnam / Philippines
+    'edu.vn', 'gov.vn', 'edu.ph', 'gov.ph',
+    # Nigeria / Pakistan / Bangladesh
+    'edu.ng', 'gov.ng', 'edu.pk', 'gov.pk', 'edu.bd', 'gov.bd',
+    # Egypt
+    'edu.eg', 'gov.eg',
+    # Thailand
+    'ac.th', 'go.th',
+    # Gulf states
+    'edu.kw', 'gov.kw', 'gov.om', 'edu.om', 'edu.qa', 'gov.qa',
+    'edu.sa', 'gov.sa', 'gov.ae', 'ac.ae',
+    # Iran / Russia / Ukraine
+    'ac.ir', 'gov.ir', 'edu.ru', 'gov.ru', 'ac.ru',
+    'edu.ua', 'gov.ua', 'ac.ua',
+}
+
+# Free / anonymous web-hosting providers that require no identity checks.
+# Heavily abused for throwaway phishing pages; a page served from one of
+# these suffixes is suspicious even when its content looks clean.
+FREE_WEBHOST_SUFFIXES = {
+    '0fees.net', 'orgfree.com', 'byethost.com', 'byet.net',
+    '000webhostapp.com', '000webhost.com', 'x10.mx', 'x10hosting.com',
+    'myregisteredsite.com', 'ifastnet.com', 'freevar.com', 'unaux.com',
+    'rf.gd', 'pp.ua',
+}
+
+# Portuguese/Spanish loyalty-promo scam vocabulary (Banco do Brasil / bank
+# points scams). Matched as substrings of the URL on unknown, non-protected
+# hosts only — legitimate stores run promos on their own known domains.
+PROMO_SCAM_KEYWORDS = (
+    'promocao', 'promoo', 'fidelidade', 'pontosfidelidade', 'premio',
+    'premiado', 'sorteio', 'brinde', 'resgate', 'cashback', 'milhas',
+    'clubebradesco', 'portalbradesco',
+)
+
+# Popular URL shorteners. They hide the real destination, so they deny the
+# identity layer any signal — worth recording as evidence by itself.
+URL_SHORTENER_HOSTS = {
+    'bit.ly', 'tinyurl.com', 'goo.gl', 't.co', 'is.gd', 'cutt.ly', 'rb.gy',
+    'shorturl.at', 'shorten.is', 'tiny.cc', 'bit.do', 'rebrand.ly', 'ow.ly',
+    'buff.ly', 's.id', 'v.gd', 'ouo.io', 'adf.ly', 'exe.io', 'shrinkme.io',
+    'clk.sh', 'linkvertise.com',
+}
+
+# Endpoints that serve raw user-uploaded content for direct download. The
+# page itself is benign-looking; the payload is what attacks the user, so we
+# record the endpoint instead of issuing a clean "safe" verdict.
+DIRECT_DOWNLOAD_ENDPOINTS = (
+    'pastebin.com/raw/',
+    'drive.usercontent.google.com/download',
+    'docs.google.com/uc?',
+    'ydray.com/get/',
+    'transfer.sh/', 'filebin.net/', 'bashupload.com/',
+)
+
 
 def registrable_info(labels):
     """Return (registrable_label, subdomain_count, public_suffix, is_public_sector).
@@ -102,17 +198,41 @@ def registrable_info(labels):
     suffix = '.'.join(labels[-public_parts:])
     reg_lbl = labels[-public_parts - 1] if len(labels) > public_parts else (labels[-1] if labels else '')
     sub_count = max(0, len(labels) - public_parts - 1)
-    public_sector = (suffix in KNOWN_PUBLIC_SUFFIXES) or (labels[-1] in {'edu', 'gov', 'mil', 'org'})
+    # Only restricted gov/edu suffixes count as public sector; commercial
+    # multi-part TLDs (com.au, co.uk, com.br, ...) do NOT.
+    public_sector = (suffix in PUBLIC_SECTOR_SUFFIXES) or (labels[-1] in {'edu', 'gov', 'mil'})
     return reg_lbl, sub_count, suffix, public_sector
-
 # High-value brands used for brand impersonation detection.
-BRAND_NAMES = [    'google', 'gmail', 'youtube', 'microsoft', 'office', 'outlook',
+BRAND_NAMES = [
+    'google', 'gmail', 'youtube', 'microsoft', 'office', 'outlook',
     'apple', 'icloud', 'paypal', 'amazon', 'facebook', 'instagram',
     'whatsapp', 'twitter', 'linkedin', 'netflix', 'spotify', 'ebay', 'etsy',
     'bankofamerica', 'chase', 'wellsfargo', 'citibank', 'capitalone',
     'usbank', 'hsbc', 'barclays', 'santander', 'revolut', 'wise', 'payoneer',
     'stripe', 'shopify', 'adobe', 'dropbox', 'slack', 'zoom', 'github',
     'venmo', 'coinbase', 'binance', 'crypto', 'metamask',
+    # Additional brands commonly targeted in phishing
+    'yahoo', 'remax', 'bb', 'bancodobrasil', 'itau', 'bradesco', 'caixa',
+    'nubank', 'inter', 'original', 'c6bank', 'picpay', 'mercadopago',
+    'mercadolivre', 'americanas', 'magazineluiza', 'casasbahia', 'extra',
+    'pontofrio', 'fastshop', 'kabum', 'webmotors', 'olx', 'airbnb',
+    'booking', 'decolar', 'maxmilhas', '123milhas', 'cvc', 'submarino',
+    'shoptime', 'ricardoeletro', 'leroymerlin', 'telhanorte', 'leroy',
+    'samsung', 'lg', 'motorola', 'xiaomi', 'huawei', 'asus', 'lenovo',
+    'dell', 'hp', 'acer', 'asus', 'msi', 'razer', 'logitech',
+    'steam', 'epic', 'origin', 'uplay', 'battlenet', 'riot',
+    'discord', 'telegram', 'signal', 'viber', 'skype', 'teams',
+    'slack', 'zoom', 'webex', 'gotomeeting', 'bluejeans',
+    'office365', 'azure', 'aws', 'cloudflare', 'digitalocean',
+    'heroku', 'vercel', 'netlify', 'github', 'gitlab', 'bitbucket',
+    'jira', 'confluence', 'trello', 'asana', 'monday', 'notion',
+    'salesforce', 'hubspot', 'pipedrive', 'zendesk', 'freshdesk',
+    'servicenow', 'workday', 'adp', 'paychex', 'gusto', 'quickbooks',
+    'xero', 'wave', 'freshbooks', 'zoho', 'odoo', 'sap',
+    'oracle', 'workday', 'servicenow', 'atlassian', 'jetbrains',
+    'intellij', 'pycharm', 'webstorm', 'vscode', 'visualstudio',
+    'docker', 'kubernetes', 'jenkins', 'circleci', 'travisci',
+    'github', 'gitlab', 'bitbucket', 'jfrog', 'artifactory',
 ]
 
 BRAND_DOMAINS = {
@@ -161,6 +281,126 @@ BRAND_DOMAINS = {
     'binance': {'binance.com'},
     'crypto': {'crypto.com'},
     'metamask': {'metamask.io'},
+    # Additional brands commonly targeted in phishing
+    'yahoo': {'yahoo.com', 'yahoo.co.jp', 'yahoo.co.uk', 'ymail.com', 'rocketmail.com'},
+    'remax': {'remax.com', 'remax.com.au', 'remax.ca', 'remax.fr', 'remax.pt'},
+    'bb': {'bb.com.br', 'banco.br', 'bancodobrasil.com.br'},
+    'bancodobrasil': {'bb.com.br', 'banco.br', 'bancodobrasil.com.br'},
+    'itau': {'itau.com.br', 'itau.com'},
+    'bradesco': {'bradesco.com.br', 'bradesco.com'},
+    'caixa': {'caixa.gov.br', 'caixa.com.br'},
+    'nubank': {'nubank.com.br', 'nubank.com'},
+    'inter': {'inter.co', 'bancointer.com.br'},
+    'original': {'original.com.br'},
+    'c6bank': {'c6bank.com.br'},
+    'picpay': {'picpay.com', 'picpay.com.br'},
+    'mercadopago': {'mercadopago.com', 'mercadopago.com.br', 'mercadopago.com.mx'},
+    'mercadolivre': {'mercadolivre.com', 'mercadolivre.com.br', 'mercadolibre.com', 'mercadolibre.com.ar'},
+    'americanas': {'americanas.com.br', 'americanas.com'},
+    'magazineluiza': {'magazineluiza.com.br', 'magazineluiza.com'},
+    'casasbahia': {'casasbahia.com.br', 'casasbahia.com'},
+    'extra': {'extra.com.br', 'extra.com'},
+    'pontofrio': {'pontofrio.com.br'},
+    'fastshop': {'fastshop.com.br'},
+    'kabum': {'kabum.com.br'},
+    'webmotors': {'webmotors.com.br'},
+    'olx': {'olx.com.br', 'olx.pt', 'olx.com', 'olx.pl'},
+    'airbnb': {'airbnb.com', 'airbnb.com.br'},
+    'booking': {'booking.com', 'booking.com.br'},
+    'decolar': {'decolar.com', 'decolar.com.br'},
+    'maxmilhas': {'maxmilhas.com.br'},
+    '123milhas': {'123milhas.com.br'},
+    'cvc': {'cvc.com.br'},
+    'submarino': {'submarino.com.br'},
+    'shoptime': {'shoptime.com.br'},
+    'ricardoeletro': {'ricardoeletro.com.br'},
+    'leroymerlin': {'leroymerlin.com.br', 'leroymerlin.com'},
+    'telhanorte': {'telhanorte.com.br'},
+    'leroy': {'leroymerlin.com.br'},
+    'samsung': {'samsung.com', 'samsung.com.br'},
+    'lg': {'lg.com', 'lg.com.br'},
+    'motorola': {'motorola.com', 'motorola.com.br'},
+    'xiaomi': {'xiaomi.com', 'mi.com', 'mi.com.br'},
+    'huawei': {'huawei.com', 'consumer.huawei.com'},
+    'asus': {'asus.com', 'asus.com.br'},
+    'lenovo': {'lenovo.com', 'lenovo.com.br'},
+    'dell': {'dell.com', 'dell.com.br'},
+    'hp': {'hp.com', 'hp.com.br'},
+    'acer': {'acer.com', 'acer.com.br'},
+    'msi': {'msi.com', 'msi.com.br'},
+    'razer': {'razer.com', 'razer.com.br'},
+    'logitech': {'logitech.com', 'logitech.com.br'},
+    'steam': {'steampowered.com', 'store.steampowered.com'},
+    'epic': {'epicgames.com'},
+    'origin': {'origin.com'},
+    'uplay': {'ubisoft.com', 'uplay.ubisoft.com'},
+    'battlenet': {'battle.net'},
+    'riot': {'riotgames.com', 'leagueoflegends.com'},
+    'discord': {'discord.com', 'discord.gg'},
+    'telegram': {'telegram.org', 't.me'},
+    'signal': {'signal.org'},
+    'viber': {'viber.com'},
+    'skype': {'skype.com'},
+    'teams': {'teams.microsoft.com'},
+    'slack': {'slack.com'},
+    'zoom': {'zoom.us', 'zoom.com'},
+    'webex': {'webex.com'},
+    'gotomeeting': {'gotomeeting.com'},
+    'bluejeans': {'bluejeans.com'},
+    'office365': {'office.com', 'office365.com'},
+    'azure': {'azure.com', 'portal.azure.com'},
+    'aws': {'aws.amazon.com', 'console.aws.amazon.com'},
+    'cloudflare': {'cloudflare.com', 'dash.cloudflare.com'},
+    'digitalocean': {'digitalocean.com', 'cloud.digitalocean.com'},
+    'heroku': {'heroku.com', 'dashboard.heroku.com'},
+    'vercel': {'vercel.com'},
+    'netlify': {'netlify.app', 'app.netlify.com'},
+    'github': {'github.com', 'github.io', 'github.dev'},
+    'gitlab': {'gitlab.com'},
+    'bitbucket': {'bitbucket.org'},
+    'jira': {'atlassian.net', 'jira.com'},
+    'confluence': {'atlassian.net', 'confluence.atlassian.com'},
+    'trello': {'trello.com'},
+    'asana': {'asana.com'},
+    'monday': {'monday.com'},
+    'notion': {'notion.so', 'notion.site'},
+    'salesforce': {'salesforce.com', 'lightning.force.com'},
+    'hubspot': {'hubspot.com', 'app.hubspot.com'},
+    'pipedrive': {'pipedrive.com'},
+    'zendesk': {'zendesk.com', 'zendesk.us'},
+    'freshdesk': {'freshdesk.com'},
+    'servicenow': {'servicenow.com'},
+    'workday': {'workday.com', 'myworkday.com'},
+    'adp': {'adp.com', 'my.adp.com'},
+    'paychex': {'paychex.com'},
+    'gusto': {'gusto.com'},
+    'quickbooks': {'quickbooks.intuit.com', 'quickbooks.com'},
+    'xero': {'xero.com', 'login.xero.com'},
+    'wave': {'waveapps.com'},
+    'freshbooks': {'freshbooks.com'},
+    'zoho': {'zoho.com', 'zoho.eu', 'zoho.com.cn'},
+    'odoo': {'odoo.com', 'odoo.sh'},
+    'sap': {'sap.com', 'launchpad.sap.com'},
+    'oracle': {'oracle.com', 'cloud.oracle.com'},
+    'workday': {'workday.com', 'myworkday.com'},
+    'servicenow': {'servicenow.com'},
+    'atlassian': {'atlassian.net', 'atlassian.com'},
+    'jetbrains': {'jetbrains.com', 'account.jetbrains.com'},
+    'intellij': {'jetbrains.com'},
+    'pycharm': {'jetbrains.com'},
+    'webstorm': {'jetbrains.com'},
+    'vscode': {'code.visualstudio.com', 'vscode.dev'},
+    'visualstudio': {'visualstudio.microsoft.com', 'dev.azure.com'},
+    'docker': {'docker.com', 'hub.docker.com'},
+    'kubernetes': {'kubernetes.io', 'k8s.io'},
+    'jenkins': {'jenkins.io'},
+    'circleci': {'circleci.com'},
+    'travisci': {'travis-ci.org', 'travis-ci.com'},
+    'github': {'github.com', 'github.io', 'github.dev'},
+    'gitlab': {'gitlab.com'},
+    'bitbucket': {'bitbucket.org'},
+    'jfrog': {'jfrog.io'},
+    'artifactory': {'jfrog.io'},
 }
 
 # Brand ownership aliases: a brand's pages legitimately live under these
@@ -188,6 +428,9 @@ HIGH_VALUE_KEYWORDS = (
     'billing', 'payment', 'password', 'recover', 'reset', 'confirm',
     'validate', 'unusual', 'suspend', 'reactivat', 'invoice', 'activ',
     'support', 'customer', 'wallet', 'bank', 'otp', '2fa', 'two-factor',
+    # Portuguese / Spanish credential vocabulary
+    'cadastro', 'senha', 'acesso', 'portalseguro', 'internetbanking',
+    'validacao', 'confirmacao', 'desbloqueio',
 )
 
 _SUSPICIOUS_PATH = re.compile(
@@ -294,7 +537,14 @@ class ThreatEvidenceEngine:
         hyphen_heavy = registrable.count('-') >= 2
         excessive_subdomains = subdomain_count >= 3
         numeric_reg = bool(re.search(r'\d', registrable)) and len(registrable) >= 5
-        suspicious_path = bool(_SUSPICIOUS_PATH.search(path))
+        path_lower = (path or '').lower()
+        suspicious_path = bool(_SUSPICIOUS_PATH.search(path)) or any(
+            k in path_lower for k in HIGH_VALUE_KEYWORDS)
+        # Credential vocabulary on a path, but only meaningful when the host
+        # is NOT a known brand (github.com/login must never fire this).
+        credential_path = (
+            not known_domain and not public_sector
+            and any(k in path_lower for k in HIGH_VALUE_KEYWORDS))
 
         # ---- brand impersonation -------------------------------------------
         claimed_brands = _extract_claimed_brands(str(title), str(brand_hints))
@@ -401,6 +651,10 @@ class ThreatEvidenceEngine:
         add('suspicious_path', 'identity', suspicious_path,
             'medium' if suspicious_path else 'low',
             0.6 if suspicious_path else 0.1, 'medium', 0.55 if suspicious_path else 0.1)
+        add('credential_path_keywords', 'identity', credential_path,
+            'medium' if credential_path else 'low',
+            0.6 if credential_path else 0.1, 'medium',
+            0.55 if credential_path else 0.1)
         add('lookalike_brand_domain', 'identity', lookalike_brand is not None,
             'high' if lookalike_brand else 'low',
             0.85 if lookalike_brand else 0.1, 'high', 0.85 if lookalike_brand else 0.1)
@@ -420,6 +674,96 @@ class ThreatEvidenceEngine:
         add('has_https', 'identity', https, 'low',
             0.4 if not https else 0.9, 'low', (0.3 if not https else 0.7),
             polarity='negative')
+
+        # ---- URL-based brand / phishing-kit heuristics -----------------------
+        # Brand name appearing in path when host is not the brand's domain
+        brand_in_path = False
+        if not known_domain and not public_sector:
+            lower_path = path.lower()
+            # Segments with file extensions stripped: 'perfilbb.php' -> 'perfilbb'
+            segments = [
+                re.sub(r'\.(html?|php[0-9]?|aspx?|jsp|cgi|cfm)$', '', s)
+                for s in re.split(r'/+', lower_path) if s
+            ]
+            for brand in BRAND_NAMES:
+                canonical = _canonical_hosts(brand)
+                if any(host == d or host.endswith('.' + d) for d in canonical):
+                    continue
+                pattern = re.compile(
+                    r'(?<![a-z0-9])' + re.escape(brand) + r'(?![a-z0-9])',
+                    re.IGNORECASE)
+                if pattern.search(lower_path):
+                    brand_in_path = True
+                    break
+                # Very short brand tokens (bb, hp, lg) get glued onto local
+                # words by kit builders: perfilbb, acessobb, portalbb, ...
+                if len(brand) <= 3 and any(
+                        seg.endswith(brand) and len(seg) > len(brand)
+                        for seg in segments):
+                    brand_in_path = True
+                    break
+
+        # Phishing kit URL markers (PayPal, generic credential harvesters)
+        phish_kit_url = False
+        if not known_domain and not public_sector:
+            url_lower = url.lower()
+            if ('webscr' in url_lower or
+                'cmd=_login-run' in url_lower or
+                'cmd=_login-submit' in url_lower or
+                'dispatch=5885d80a13c0db1f' in url_lower or
+                '/confirmaccount' in url_lower or
+                'account-login' in url_lower or
+                'secure-login' in url_lower or
+                'verify-account' in url_lower or
+                'session-expired' in url_lower or
+                'update-card' in url_lower or
+                'signin-verify' in url_lower or
+                '/PortalSeguro/' in url_lower):
+                phish_kit_url = True
+
+        # Free / anonymous hosting suffix under the page's registrable domain
+        free_hosting = any(
+            host == s or host.endswith('.' + s) for s in FREE_WEBHOST_SUFFIXES)
+
+        # Loyalty-promo scam vocabulary on a non-protected host (Brazilian
+        # bank points scams: promocaopontosfidelidade.k6.com.br etc.)
+        promo_scam = (
+            not known_domain and not public_sector
+            and any(k in url.lower() for k in PROMO_SCAM_KEYWORDS))
+
+        # URL shortener as the visible host — destination identity is hidden.
+        url_shortener = (
+            host in URL_SHORTENER_HOSTS
+            or any(host.endswith('.' + s) for s in URL_SHORTENER_HOSTS))
+
+        # Raw user-content download endpoints (payload delivery channels).
+        direct_download = any(mk in url.lower() for mk in DIRECT_DOWNLOAD_ENDPOINTS)
+
+        # ---- add new identity detectors ------------------------------------
+        add('brand_in_path', 'identity', brand_in_path,
+            'high' if brand_in_path else 'low',
+            0.85 if brand_in_path else 0.1, 'very_high',
+            0.85 if brand_in_path else 0.1)
+        add('phish_kit_url', 'identity', phish_kit_url,
+            'critical' if phish_kit_url else 'low',
+            0.95 if phish_kit_url else 0.1, 'very_high',
+            0.95 if phish_kit_url else 0.1)
+        add('free_hosting_subdomain', 'identity', free_hosting,
+            'medium' if free_hosting else 'low',
+            0.7 if free_hosting else 0.1, 'medium',
+            0.65 if free_hosting else 0.1)
+        add('promo_scam_keywords', 'content', promo_scam,
+            'medium' if promo_scam else 'low',
+            0.75 if promo_scam else 0.1, 'high',
+            0.7 if promo_scam else 0.1)
+        add('url_shortener_host', 'identity', url_shortener,
+            'medium' if url_shortener else 'low',
+            0.6 if url_shortener else 0.1, 'high',
+            0.55 if url_shortener else 0.1)
+        add('direct_download_endpoint', 'content', direct_download,
+            'low' if direct_download else 'low',
+            0.5 if direct_download else 0.1, 'medium',
+            0.4 if direct_download else 0.1)
 
         # ---- interaction (credentials) --------------------------------------
         add('password_field_present', 'interaction', password_fields > 0,
@@ -509,12 +853,20 @@ class ThreatEvidenceEngine:
         if any(d['feature'] in ('credential_submission_mismatch',) and d['value'] for d in triggered):
             threat_category = 'phishing'
             severity = 'critical'
-        elif any(d['feature'] in ('brand_impersonation', 'hidden_login_form') and bool(d['value']) for d in triggered):
+        elif any(d['feature'] in ('brand_impersonation', 'hidden_login_form', 'brand_in_path', 'phish_kit_url')
+                 and bool(d['value']) for d in triggered):
             threat_category = 'phishing'
             severity = 'high'
         elif (any(d['feature'] == 'form_action_domain_mismatch' and bool(d['value']) for d in triggered)
               and any(d['feature'] in ('obfuscated_content', 'hidden_elements_count', 'unknown_tld')
-                      and bool(d['value']) for d in triggered)):
+                        and bool(d['value']) for d in triggered)):
+            threat_category = 'phishing'
+            severity = 'high'
+        elif (any(d['feature'] == 'promo_scam_keywords' and bool(d['value']) for d in triggered)
+              and any(d['feature'] in ('free_hosting_subdomain', 'obfuscated_content',
+                                       'hidden_elements_count', 'excessive_subdomains',
+                                       'numeric_reg', 'unknown_tld')
+                        and bool(d['value']) for d in triggered)):
             threat_category = 'phishing'
             severity = 'high'
         elif any(d['category'] == 'privacy' and bool(d['value']) for d in triggered):
