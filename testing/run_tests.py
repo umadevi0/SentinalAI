@@ -23,6 +23,8 @@ Output CSV  (testing/results.csv, overwritten each run)
       - browser error pages (DNS_PROBE_FINISHED_NXDOMAIN etc.)
       - non-English pages (skipped_non_english)
       - empty / parked pages with no usable content (empty_or_parked)
+      - off-target redirects / cloaking (redirected_off_target)
+      - Google Docs/Sheets/Slides/Sites hosts (skipped_untestable_host)
     Columns:
     url, page_status, decision, trust, confidence, ml_probability, threat,
     stage, certainty, evidence, latency_ms,
@@ -36,6 +38,8 @@ Usage:
     python testing/run_tests.py                        # root backend, 4 workers
     python testing/run_tests.py --backends nested      # test the older copy
     python testing/run_tests.py --input my_urls.csv --workers 8
+    python testing/run_tests.py --max-results 100      # stop after 100 rows
+                                                       # (default 50; 0 = all)
 """
 import argparse
 import csv
@@ -48,8 +52,9 @@ import sys
 import threading
 import time
 from datetime import datetime
-from multiprocessing import Process, Queue
+from multiprocessing import Event as MPEvent, Process, Queue
 from urllib import request as urlrequest
+from urllib.parse import urlparse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _PY_CANDIDATES = [
@@ -76,7 +81,7 @@ LOAD_FAILURE_STATUSES = {
     'dns_error', 'connection_error', 'security_error_certificate',
     'security_warning_safebrowsing', 'browser_blocked', 'timeout',
     'other_error', 'skipped_non_english', 'empty_or_parked',
-    'redirected_off_target',
+    'redirected_off_target', 'skipped_untestable_host',
 }
 
 SKIP_REASONS = {
@@ -84,6 +89,16 @@ SKIP_REASONS = {
     'empty_or_parked': 'page rendered empty/parked (dead or parked domain)',
     'redirected_off_target': 'page redirected to an unrelated domain '
                              '(scanner-evasion / cloaking)',
+    'skipped_untestable_host': 'URL hosts user content behind a legitimate '
+                               'platform UI (Google Docs/Sheets/Slides/Sites)',
+}
+
+# Platforms that serve arbitrary user uploads behind their own genuine UI
+# (sign-in walls, viewers). The rendered page is really Google's, so the
+# classifier can never see the payload -> untestable, always discard.
+UNTESTABLE_HOSTS = {
+    'docs.google.com', 'sites.google.com', 'slides.google.com',
+    'sheets.google.com',
 }
 
 URL_HEADER_HINTS = {'url', 'urls', 'link', 'links', 'website', 'site', 'address'}
@@ -342,7 +357,6 @@ def _core_domain(host):
 
 def redirected_off_target(requested_url, final_host):
     try:
-        from urllib.parse import urlparse
         req_host = urlparse(requested_url).hostname or ''
     except Exception:
         return False
@@ -457,7 +471,7 @@ def load_rows(path):
     return uniq, (label_col is not None)
 
 
-def worker(base_url, task_q, result_q, nav_timeout_ms):
+def worker(base_url, task_q, result_q, nav_timeout_ms, stop_evt=None):
     from playwright.sync_api import sync_playwright
     import psutil
 
@@ -501,10 +515,30 @@ def worker(base_url, task_q, result_q, nav_timeout_ms):
             return ctx
         try:
             while True:
-                task = task_q.get()
+                try:
+                    task = task_q.get(timeout=2)
+                except queue.Empty:
+                    if stop_evt is not None and stop_evt.is_set():
+                        break
+                    continue
                 if task is None:
                     break
+                if stop_evt is not None and stop_evt.is_set():
+                    break
                 url, actual = task
+
+                # Platform-hosted user content (Google Docs/Sheets/Slides/
+                # Sites): the page really is Google's UI - untestable.
+                req_host = urlparse(url).hostname or ''
+                if req_host in UNTESTABLE_HOSTS:
+                    print(f'[worker] skip untestable host: {url}')
+                    row = {c: '' for c in RESULT_COLUMNS}
+                    row.update({'url': url, 'actual': actual,
+                                'page_status': 'skipped_untestable_host',
+                                'timestamp_sent': datetime.now().isoformat(timespec='seconds')})
+                    result_q.put(row)
+                    continue
+
                 row = {c: '' for c in RESULT_COLUMNS}
                 row['url'] = url
                 row['actual'] = actual
@@ -668,7 +702,8 @@ def worker(base_url, task_q, result_q, nav_timeout_ms):
                 pass
 
 
-def writer_thread(csv_path, result_q, done_evt, workers, stats):
+def writer_thread(csv_path, result_q, done_evt, workers, stats,
+                  max_results=0, stop_evt=None):
     os.makedirs(os.path.dirname(csv_path), exist_ok=True)
     with open(csv_path, 'w', newline='', encoding='utf-8') as f:
         w = csv.DictWriter(f, fieldnames=RESULT_COLUMNS)
@@ -699,19 +734,28 @@ def writer_thread(csv_path, result_q, done_evt, workers, stats):
             w.writerow({k: row.get(k, '') for k in RESULT_COLUMNS})
             f.flush()
             stats['written'] += 1
+            if max_results and stats['written'] >= int(max_results):
+                print(f"[writer] results.csv has {stats['written']} rows "
+                      f"(--max-results {int(max_results)}) - stopping test")
+                if stop_evt is not None:
+                    stop_evt.set()
+                break
         done_evt.set()
 
 
-def run_backend(name, items, has_labels, workers_count, nav_timeout_ms, csv_path):
+def run_backend(name, items, has_labels, workers_count, nav_timeout_ms,
+                csv_path, max_results=0):
     port = free_port(BACKENDS[name]['base_port'])
     print(f'[{name}] starting backend on :{port} ({BACKENDS[name]["dir"]})')
     server, base = start_server(name, port)
     task_q, result_q = Queue(), Queue()
+    stop_evt = MPEvent()  # mp.Event: must survive pickling to worker procs
     procs = []
     try:
         for _ in range(workers_count):
             pr = Process(target=worker,
                          args=(base, task_q, result_q, nav_timeout_ms),
+                         kwargs={'stop_evt': stop_evt},
                          daemon=True)
             pr.start()
             procs.append(pr)
@@ -720,6 +764,8 @@ def run_backend(name, items, has_labels, workers_count, nav_timeout_ms, csv_path
         stats = {'written': 0, 'skipped': 0}
         wr = threading.Thread(target=writer_thread,
                               args=(csv_path, result_q, done_evt, procs, stats),
+                              kwargs={'max_results': max_results,
+                                      'stop_evt': stop_evt},
                               daemon=True)
         wr.start()
 
@@ -750,6 +796,8 @@ def run_backend(name, items, has_labels, workers_count, nav_timeout_ms, csv_path
         pass
     line = (f'[{name}] done -> {csv_path} ({summary}/{len(items)} analyzed'
             f' | {stats["skipped"]} not loaded -> no result')
+    if max_results and summary >= int(max_results):
+        line += f' | stopped early: --max-results {int(max_results)} reached'
     if has_labels and summary:
         line += f' | agreement with actual: {correct}/{summary}'
     print(line + ')')
@@ -761,6 +809,9 @@ def main():
     ap.add_argument('--backends', default='root', choices=['root', 'nested'])
     ap.add_argument('--workers', type=int, default=4)
     ap.add_argument('--timeout-ms', type=int, default=30000)
+    ap.add_argument('--max-results', type=int, default=50,
+                    help='stop the test once results.csv holds this many '
+                         'rows (default 50; 0 = run every URL)')
     ap.add_argument('--output', default=os.path.join(ROOT, 'testing', 'results.csv'))
     args = ap.parse_args()
 
@@ -769,9 +820,10 @@ def main():
         print(f'No URLs found in {args.input}')
         sys.exit(1)
     print(f'{len(items)} URLs | backend={args.backends} | workers={args.workers}'
+          f' | stop after {args.max_results or "all"} result row(s)'
           f' | label column: {"detected" if has_labels else "not found (actual blank)"}')
     run_backend(args.backends, items, has_labels, args.workers,
-                args.timeout_ms, args.output)
+                args.timeout_ms, args.output, max_results=args.max_results)
 
 
 if __name__ == '__main__':
