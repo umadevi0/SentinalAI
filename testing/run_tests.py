@@ -15,10 +15,14 @@ Input CSV
     (digit convention matches the output: 1 = legit, 0 = phishing)
 
 Output CSV  (testing/results.csv, overwritten each run)
-    Only pages that loaded cleanly (opened_ok) get a row. Any failure -
-    dns/connection/certificate/blocked/timeout AND any HTTP error status
-    (4xx/5xx like 404 or 503) - is skipped with a console note and appears
-    nowhere in the CSV.
+    Only pages that loaded cleanly (opened_ok), are English-language, and
+    render actual content get a row. Everything else is skipped with a
+    console note and appears nowhere in the CSV:
+      - load failures: dns/connection/certificate/blocked/timeout
+      - HTTP error statuses (4xx/5xx like 404 or 503)
+      - browser error pages (DNS_PROBE_FINISHED_NXDOMAIN etc.)
+      - non-English pages (skipped_non_english)
+      - empty / parked pages with no usable content (empty_or_parked)
     Columns:
     url, page_status, decision, trust, confidence, ml_probability, threat,
     stage, certainty, evidence, latency_ms,
@@ -67,11 +71,19 @@ RESULT_COLUMNS = [
     'predicted', 'actual',
 ]
 
-# Page never actually loaded -> no result row is written for these.
+# Page never actually loaded / not classifiable -> no result row for these.
 LOAD_FAILURE_STATUSES = {
     'dns_error', 'connection_error', 'security_error_certificate',
     'security_warning_safebrowsing', 'browser_blocked', 'timeout',
-    'other_error',
+    'other_error', 'skipped_non_english', 'empty_or_parked',
+    'redirected_off_target',
+}
+
+SKIP_REASONS = {
+    'skipped_non_english': 'page content is not English',
+    'empty_or_parked': 'page rendered empty/parked (dead or parked domain)',
+    'redirected_off_target': 'page redirected to an unrelated domain '
+                             '(scanner-evasion / cloaking)',
 }
 
 URL_HEADER_HINTS = {'url', 'urls', 'link', 'links', 'website', 'site', 'address'}
@@ -175,6 +187,8 @@ SNAPSHOT_JS = r"""
     credentialSubmissionDestinationMismatch: state.credentialSubmissionDestinationMismatch,
     brandHints: document.title.replace(/[|_>-]/g, ' ').slice(0, 200),
     timeline: [{ type: 'page_load', t: 0 }],
+    lang: (document.documentElement && document.documentElement.lang) || '',
+    textSample: document.body ? document.body.innerText.slice(0, 3000) : '',
   };
 }
 """
@@ -185,10 +199,18 @@ INTERSTITIAL_MARKERS = [
       'the site ahead contains harmful programs']),
     ('security_error_certificate',
      ["your connection isn't private", 'your connection is not private',
+      "your connection isn\u2019t private",
       'this site is not secure', 'net::err_cert']),
     ('connection_error',
-     ["this site can't be reached", "hmmm… can't reach this page",
-      'this webpage is not available', 'no internet']),
+     ["this site can't be reached", "this site can\u2019t be reached",
+      "hmmm… can't reach this page", "hmmm\u2026 can\u2019t reach this page",
+      'this webpage is not available', 'no internet',
+      'dns_probe_finished_nxdomain',
+      'err_name_not_resolved', 'err_address_unreachable',
+      'dns address could not be found', 'server ip address could not be found',
+      'check if there is a typo in',
+      'is currently unable to handle this request', 'err_connection_refused',
+      'err_connection_timed_out', 'this page has been removed']),
     ('browser_blocked',
      ['blocked by your network administrator', 'this site is blocked',
       'access to this site is blocked', 'site is blocked by the administrator']),
@@ -227,6 +249,106 @@ def classify_page_content(title, body_sample):
             if mk in hay:
                 return status
     return None
+
+
+# ---- language gate -----------------------------------------------------------
+# Non-Latin script runs (CJK / Cyrillic / Arabic / Hebrew / Greek / Thai /
+# Devanagari / Hangul / Kana) plus an English-stopword ratio test.
+_NON_LATIN_RE = re.compile(
+    r'[\u0370-\u03ff\u0400-\u04ff\u0590-\u05ff\u0600-\u06ff\u0900-\u097f'
+    r'\u0e00-\u0e7f\u10a0-\u10ff\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff'
+    r'\uf900-\ufaff\uff00-\uffef\uac00-\ud7af]')
+EN_STOPWORDS = {
+    'the', 'and', 'of', 'to', 'you', 'your', 'is', 'for', 'in', 'on', 'with',
+    'account', 'login', 'password', 'click', 'here', 'email', 'not', 'it',
+    'this', 'that', 'be', 'are', 'as', 'we', 'our', 'will', 'or', 'if',
+    'from', 'at', 'by', 'an', 'have', 'has', 'can', 'please', 'enter',
+    'sign', 'up', 'new', 'free', 'all', 'more', 'get', 'how', 'what', 'us',
+}
+
+
+def is_english_page(snapshot):
+    """True when the page looks English enough to keep for testing."""
+    text = str(snapshot.get('textSample') or '')
+    html_lang = str(snapshot.get('lang') or '').strip().lower()
+
+    letters = len(re.findall(r'[^\W\d_]', text, re.UNICODE))
+    if letters >= 40:
+        nonlatin = len(_NON_LATIN_RE.findall(text))
+        if nonlatin / max(1, letters) > 0.25:
+            return False
+
+    if html_lang and not html_lang.startswith('en'):
+        # e.g. lang="pt-BR" / "de" — explicit non-English declaration wins,
+        # but only trust it when there is real text backing it up (many kits
+        # leave a bogus lang attribute on image-only pages).
+        if len(re.findall(r'[A-Za-z]', text)) >= 120:
+            return False
+
+    words = re.findall(r"[A-Za-z']+", text)
+    if len(words) >= 60:
+        hits = sum(1 for w in words if w.lower().strip("'") in EN_STOPWORDS)
+        if hits / len(words) < 0.08:
+            return False
+    return True
+
+
+def looks_empty_or_parked(snapshot, body_text):
+    """Dead domain that still resolves somewhere: no usable content at all."""
+    txt = (body_text or '').strip()
+    interactive = sum(int(snapshot.get(k) or 0)
+                      for k in ('passwordFields', 'forms'))
+    return len(txt) < 60 and interactive == 0
+
+
+def merge_snapshots(a, b):
+    """Element-wise worst-case merge of two snapshots (extension parity)."""
+    out = dict(b)
+    for k in ('passwordFields', 'forms', 'hiddenElements', 'externalScripts',
+              'permissionRequests', 'promptInjectionSignals', 'iframes',
+              'redirectCount'):
+        out[k] = max(int(a.get(k) or 0), int(b.get(k) or 0))
+    for k in ('otpRequest', 'hiddenLoginForm', 'obfuscatedContent',
+              'formActionDomainMismatch',
+              'credentialSubmissionDestinationMismatch', 'hasLoginIntent'):
+        out[k] = bool(a.get(k)) or bool(b.get(k))
+    if len(str(a.get('textSample') or '')) > len(str(out.get('textSample') or '')):
+        out['textSample'] = a.get('textSample')
+    if len(str(a.get('title') or '')) > len(str(out.get('title') or '')):
+        out['title'] = a.get('title')
+        out['brandHints'] = a.get('brandHints')
+    return out
+
+
+# Two-part suffixes so core-domain comparison works for hosts like
+# promocaopontosfidelidade.k6.com.br (core must be k6.com.br, not com.br).
+_MULTIPART_SUFFIXES = {
+    'co.uk', 'org.uk', 'ac.uk', 'gov.uk', 'co.in', 'net.in', 'org.in',
+    'com.au', 'net.au', 'org.au', 'co.nz', 'co.jp', 'ne.jp', 'com.br',
+    'gov.br', 'com.mx', 'com.ar', 'co.za', 'com.tr', 'com.sg', 'co.kr',
+    'com.cn', 'com.hk', 'co.id', 'com.my', 'com.ph', 'com.vn', 'com.tw',
+}
+
+
+def _core_domain(host):
+    """Registrable-ish ('k6','com','br') tuple used for redirect comparison."""
+    labels = [l for l in str(host or '').lower().split('.') if l]
+    if len(labels) >= 3 and '.'.join(labels[-2:]) in _MULTIPART_SUFFIXES:
+        return tuple(labels[-3:])
+    if len(labels) >= 2:
+        return tuple(labels[-2:])
+    return tuple(labels)
+
+
+def redirected_off_target(requested_url, final_host):
+    try:
+        from urllib.parse import urlparse
+        req_host = urlparse(requested_url).hostname or ''
+    except Exception:
+        return False
+    if not req_host or not final_host:
+        return False
+    return _core_domain(req_host) != _core_domain(final_host)
 
 
 def http_json(url, payload=None, timeout=60):
@@ -349,7 +471,34 @@ def worker(base_url, task_q, result_q, nav_timeout_ms):
             return [me]
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        # Basic stealth: many phishing kits fingerprint headless browsers and
+        # redirect them to benign sites (cloaking). Look like a normal Chrome.
+        browser = p.chromium.launch(
+            headless=True,
+            args=['--disable-blink-features=AutomationControlled'])
+        real_ua = None
+        try:
+            probe_ctx = browser.new_context()
+            pg = probe_ctx.new_page()
+            real_ua = pg.evaluate('navigator.userAgent')
+            probe_ctx.close()
+        except Exception:
+            real_ua = ''
+        ua = (real_ua or '').replace('HeadlessChrome', 'Chrome')
+
+        def new_context():
+            ctx = browser.new_context(
+                user_agent=ua or None,
+                viewport={'width': 1366, 'height': 768},
+                locale='en-US',
+            )
+            try:
+                ctx.add_init_script(
+                    "Object.defineProperty(navigator,'webdriver',"
+                    "{get:()=>undefined});")
+            except Exception:
+                pass
+            return ctx
         try:
             while True:
                 task = task_q.get()
@@ -383,8 +532,23 @@ def worker(base_url, task_q, result_q, nav_timeout_ms):
 
                 status = 'opened_ok'
                 snapshot = None
-                context = browser.new_context()
+                context = new_context()
                 page = context.new_page()
+
+                def safe_snapshot():
+                    try:
+                        return page.evaluate(SNAPSHOT_JS)
+                    except Exception:
+                        return None
+
+                def body_text():
+                    try:
+                        return page.evaluate(
+                            "document.body ? document.body.innerText"
+                            ".slice(0,4000) : ''")
+                    except Exception:
+                        return ''
+
                 try:
                     resp = page.goto(url, wait_until='domcontentloaded',
                                      timeout=nav_timeout_ms)
@@ -392,20 +556,59 @@ def worker(base_url, task_q, result_q, nav_timeout_ms):
                         page.wait_for_load_state('load', timeout=8000)
                     except Exception:
                         pass
+                    try:
+                        # let XHR/fetch traffic settle before first look
+                        page.wait_for_load_state('networkidle', timeout=6000)
+                    except Exception:
+                        pass
+
                     if resp is not None and resp.status >= 400:
                         status = f'http_error_{resp.status}'
                     sample()
-                    body = ''
+                    title = ''
                     try:
-                        body = page.evaluate(
-                            "document.body ? document.body.innerText.slice(0,4000) : ''")
+                        title = page.title()
                     except Exception:
                         pass
-                    content_status = classify_page_content(page.title(), body)
+                    body = body_text()
+                    # Chrome/edge error pages keep the original URL and can
+                    # even return 200 - classify by rendered text FIRST so
+                    # DNS_PROBE_FINISHED_NXDOMAIN-style pages are never
+                    # mistaken for real site content.
+                    content_status = classify_page_content(title, body)
                     if content_status and status == 'opened_ok':
                         status = content_status
-                    if status == 'opened_ok' or status.startswith('http_error'):
-                        snapshot = page.evaluate(SNAPSHOT_JS)
+
+                    if status == 'opened_ok':
+                        # Two-pass settled snapshot: SPA / phishing-kit pages
+                        # render their login form AFTER load (the extension
+                        # sees this via its MutationObserver). Wait, then
+                        # merge both passes element-wise (worst case).
+                        time.sleep(1.2)
+                        s1 = safe_snapshot()
+                        time.sleep(2.3)
+                        s2 = safe_snapshot()
+                        if s1 is not None and s2 is not None:
+                            snapshot = merge_snapshots(s1, s2)
+                        else:
+                            snapshot = s2 or s1
+                        body = body_text() or body
+
+                        if snapshot is not None and redirected_off_target(
+                                url, snapshot.get('domain')):
+                            print(f'[worker] skip off-target redirect: {url} '
+                                  f'-> {snapshot.get("domain")}')
+                            status = 'redirected_off_target'
+                            snapshot = None
+                        elif snapshot is not None and not is_english_page(snapshot):
+                            print(f'[worker] skip non-English page: {url} '
+                                  f'(lang={snapshot.get("lang")!r})')
+                            status = 'skipped_non_english'
+                            snapshot = None
+                        elif snapshot is not None and looks_empty_or_parked(snapshot, body):
+                            print(f'[worker] skip empty/parked page: {url}')
+                            status = 'empty_or_parked'
+                            snapshot = None
                 except Exception as e:
                     status, _ = classify_nav_error(str(e))
 
@@ -488,8 +691,10 @@ def writer_thread(csv_path, result_q, done_evt, workers, stats):
             if (row.get('page_status') in LOAD_FAILURE_STATUSES
                     or str(row.get('page_status', '')).startswith('http_error')):
                 stats['skipped'] += 1
-                print(f"[writer] no result kept - page did not load: "
-                      f"{row['url']} ({row['page_status']})", file=sys.stderr)
+                st = row.get('page_status')
+                reason = SKIP_REASONS.get(st, 'page did not load')
+                print(f"[writer] no result kept - {reason}: "
+                      f"{row['url']} ({st})", file=sys.stderr)
                 continue
             w.writerow({k: row.get(k, '') for k in RESULT_COLUMNS})
             f.flush()
