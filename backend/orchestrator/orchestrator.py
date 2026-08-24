@@ -26,7 +26,6 @@ class AdaptiveThreatOrchestrator:
     # so benign big-brand sites can never match them.
     CRITICAL_COMBOS = {
         frozenset({'obfuscated_content', 'login_intent'}),
-        frozenset({'obfuscated_content', 'hidden_elements_count'}),
         frozenset({'hidden_elements_count', 'login_intent'}),
         frozenset({'promo_scam_keywords', 'free_hosting_subdomain'}),
     }

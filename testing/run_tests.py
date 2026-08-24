@@ -166,9 +166,41 @@ SNAPSHOT_JS = r"""
     /otp|one-time|2fa|two.factor/i.test(
       el.getAttribute('autocomplete') + ' ' + (el.getAttribute('name') || '') + ' ' + (el.getAttribute('aria-label') || '')
     ));
-  state.obfuscated = !!document.querySelector(
-    '[style*="font-size" i][style*="0" i], [style*="opacity" i][style*="0" i], [style*="color:transparent" i], [style*="text-indent" i][style*="-9999" i]'
-  );
+  state.obfuscated = (() => {
+    // (a) script-level obfuscation: eval/atob/unescape blobs in inline JS
+    const OBF_SCRIPT_RE = /\beval\s*\(|\batob\s*\(|unescape\s*\(|String\.fromCharCode|document\.write\s*\(\s*unescape|(?:\\x[0-9a-fA-F]{2}){6,}/;
+    try {
+      const scripts = document.querySelectorAll('script:not([src])');
+      for (let i = 0; i < scripts.length && i < 200; i++) {
+        const t = scripts[i].textContent || '';
+        if (t.length > 60 && OBF_SCRIPT_RE.test(t)) return true;
+      }
+    } catch (e) {}
+    // (b) invisible TEXT hidden inside/near a credential form
+    //     (carousels, sr-only labels and scroll clones elsewhere are benign)
+    const invis = (el) => {
+      const s = window.getComputedStyle(el);
+      if (!s || s.display === 'none' || s.visibility === 'hidden') return false;
+      if ((el.textContent || '').trim().length < 8) return false;
+      if (parseFloat(s.opacity) === 0) return true;
+      if (parseFloat(s.fontSize) === 0) return true;
+      if (parseFloat(s.textIndent) <= -999) return true;
+      const c = s.color || '';
+      if (c === 'transparent') return true;
+      const m = c.match(/rgba?\(([^)]+)\)/);
+      if (m) { const p = m[1].split(','); if (p.length === 4 && parseFloat(p[3]) === 0) return true; }
+      return false;
+    };
+    const credForms = Array.from(document.querySelectorAll('form')).filter(
+      (f) => f.querySelector('input[type="password"], input[type="email"], input[name*="mail" i], input[autocomplete*="user" i]'));
+    for (const f of credForms.slice(0, 10)) {
+      const els = f.querySelectorAll('*');
+      for (let i = 0; i < els.length && i < 800; i++) {
+        if (invis(els[i])) return true;
+      }
+    }
+    return false;
+  })();
   const PROMPT_RE = /ignore (all |previous )?(instructions|prompts|text|content)|system prompt|you are now |disregard (the )?(previous|above)|"role"\s*:\s*"system"/i;
   let hits = 0;
   const hidden = document.querySelectorAll(
