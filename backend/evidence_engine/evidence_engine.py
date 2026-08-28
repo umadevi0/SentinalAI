@@ -185,6 +185,25 @@ DIRECT_DOWNLOAD_ENDPOINTS = (
 )
 
 
+# High-risk TLDs that are disproportionately used by phishing kits.
+# Unlike unknown TLDs (which are just unfamiliar), these are *known-bad*
+# registrations — nearly every login page on .xyz / .top / .buzz is phishing.
+HIGH_RISK_TLDS = {
+    'xyz', 'top', 'buzz', 'tk', 'ml', 'ga', 'cf', 'gq',
+    'icu', 'monster', 'surf', 'rest', 'fun', 'link', 'click',
+    'space', 'life', 'date', 'racing', 'win', 'loan', 'stream',
+    'download', 'cricket', 'party', 'science', 'trade', 'webcam',
+    'faith', 'review', 'men', 'gdn', 'tokyo', 'bond', 'cfd',
+}
+
+# Brand-name keywords that appear in phishing subdomains to fake legitimacy:
+# 'secure.paypal.com.fakesite.xyz', 'login.account-verify.com', etc.
+CREDENTIAL_SUBDOMAIN_KEYWORDS = (
+    'secure', 'login', 'signin', 'account', 'verify', 'auth', 'portal',
+    'banking', 'mail', 'webmail', 'my', 'access', 'session', 'id',
+)
+
+
 def registrable_info(labels):
     """Return (registrable_label, subdomain_count, public_suffix, is_public_sector).
 
@@ -534,9 +553,29 @@ class ThreatEvidenceEngine:
 
         # ---- identity / host heuristics ------------------------------------
         tld_known = tld in KNOWN_TLDS
+        high_risk_tld = tld in HIGH_RISK_TLDS
         hyphen_heavy = registrable.count('-') >= 2
         excessive_subdomains = subdomain_count >= 3
         numeric_reg = bool(re.search(r'\d', registrable)) and len(registrable) >= 5
+        # Random / garbled domain name: long name with many digits and hyphens
+        # (phishing kit auto-generated domains: secure-banking-verify-2839.com)
+        reg_len = len(registrable)
+        digit_count = sum(1 for c in registrable if c.isdigit())
+        digit_ratio = digit_count / max(1, reg_len)
+        random_domain = (
+            reg_len > 20
+            or (digit_ratio > 0.35 and hyphen_heavy)
+            or (reg_len > 12 and digit_ratio > 0.4)
+            or registrable.count('-') >= 4
+        )
+        # Credential keyword in a subdomain on a non-brand host is a phish
+        # signature: 'secure.paypal.com.fakesite.xyz'
+        cred_subdomain = False
+        if not known_domain and not public_sector and subdomain_count >= 1:
+            sub_labels = labels[:-(1 + (2 if len(labels) >= 3 and '.'.join(labels[-2:]) in KNOWN_PUBLIC_SUFFIXES else 1) - 1)]
+            if sub_labels:
+                sub_str = ' '.join(sub_labels)
+                cred_subdomain = any(kw in sub_str for kw in CREDENTIAL_SUBDOMAIN_KEYWORDS)
         path_lower = (path or '').lower()
         suspicious_path = bool(_SUSPICIOUS_PATH.search(path)) or any(
             k in path_lower for k in HIGH_VALUE_KEYWORDS)
@@ -577,11 +616,13 @@ class ThreatEvidenceEngine:
 
         suspicious_host = (
             not tld_known
+            or high_risk_tld
             or is_ip
             or has_at_sign
             or punycode
             or hyphen_heavy
             or excessive_subdomains
+            or random_domain
             or lookalike_brand is not None
         )
 
@@ -600,14 +641,56 @@ class ThreatEvidenceEngine:
         if form_action_mismatch is None:
             form_action_mismatch = bool(form_destination and _destination_mismatch(form_destination))
 
+        # Phishing kit pattern checks are needed before the safe-login override.
+        phish_kit_url = False
+        if not known_domain and not public_sector:
+            url_lower = url.lower()
+            if ('webscr' in url_lower or
+                'cmd=_login-run' in url_lower or
+                'cmd=_login-submit' in url_lower or
+                'dispatch=5885d80a13c0db1f' in url_lower or
+                '/confirmaccount' in url_lower or
+                'account-login' in url_lower or
+                'secure-login' in url_lower or
+                'verify-account' in url_lower or
+                'session-expired' in url_lower or
+                'update-card' in url_lower or
+                'signin-verify' in url_lower or
+                '/PortalSeguro/' in url_lower):
+                phish_kit_url = True
+
+        # Legitimate login pages are common and must not be treated as phishing
+        # just because they have a password field or a login form. They only
+        # become risky when the identity context is suspicious.
+        # CRITICAL FIX: safe_login_context must require the domain to be known
+        # or public-sector. A login form on a random unknown domain is NEVER
+        # safe by default — it must be escalated for deep analysis.
+        safe_login_context = (
+            https and password_fields > 0 and login_intent and form_count > 0
+            and (known_domain or public_sector)
+            and not suspicious_host
+            and not brand_impersonation
+            and not form_action_mismatch
+            and not cred_mismatch
+            and not lookalike_brand
+            and not phish_kit_url
+            and not punycode
+        )
+        if safe_login_context:
+            suspicious_path = False
+            credential_path = False
+
         # A login form on an unfamiliar, suspicious host is a phishing signature --
         # unless the page is on trusted public-sector infrastructure (education /
         # government), where subdomained logins are normal.
+        # CRITICAL FIX: Remove the `suspicious_host or redirects >= 1` gate.
+        # Phishing pages on .com with clean hostnames were slipping through
+        # because they never triggered suspicious_host. Any password form on a
+        # non-known, non-public-sector domain is a credential risk.
         credentials_on_unknown_target = (
             password_fields > 0
             and not known_domain
             and not public_sector
-            and (suspicious_host or redirects >= 1)
         )
 
         # ---- build structured detectors -------------------------------------
@@ -674,6 +757,15 @@ class ThreatEvidenceEngine:
         add('has_https', 'identity', https, 'low',
             0.4 if not https else 0.9, 'low', (0.3 if not https else 0.7),
             polarity='negative')
+        add('high_risk_tld', 'identity', high_risk_tld,
+            'high' if high_risk_tld else 'low',
+            0.8 if high_risk_tld else 0.1, 'high', 0.75 if high_risk_tld else 0.1)
+        add('random_domain_name', 'identity', random_domain,
+            'high' if random_domain else 'low',
+            0.75 if random_domain else 0.1, 'high', 0.7 if random_domain else 0.1)
+        add('credential_keyword_in_subdomain', 'identity', cred_subdomain,
+            'high' if cred_subdomain else 'low',
+            0.8 if cred_subdomain else 0.1, 'high', 0.75 if cred_subdomain else 0.1)
 
         # ---- URL-based brand / phishing-kit heuristics -----------------------
         # Brand name appearing in path when host is not the brand's domain
@@ -781,6 +873,9 @@ class ThreatEvidenceEngine:
             'high' if credentials_on_unknown_target else 'low',
             0.9 if credentials_on_unknown_target else 0.1, 'high',
             0.85 if credentials_on_unknown_target else 0.1)
+        add('safe_login_context', 'identity', safe_login_context,
+            'low', 0.2 if safe_login_context else 0.1, 'medium',
+            0.25 if safe_login_context else 0.1, polarity='negative')
 
         # ---- credential flow (strongest) -------------------------------------
         add('form_action_domain_mismatch', 'identity', bool(form_action_mismatch),
@@ -864,8 +959,18 @@ class ThreatEvidenceEngine:
             severity = 'high'
         elif (any(d['feature'] == 'promo_scam_keywords' and bool(d['value']) for d in triggered)
               and any(d['feature'] in ('free_hosting_subdomain', 'obfuscated_content',
-                                       'hidden_elements_count', 'excessive_subdomains',
-                                       'numeric_reg', 'unknown_tld')
+                                        'hidden_elements_count', 'excessive_subdomains',
+                                        'numeric_reg', 'unknown_tld')
+                        and bool(d['value']) for d in triggered)):
+            threat_category = 'phishing'
+            severity = 'high'
+        elif (any(d['feature'] == 'credential_keyword_in_subdomain' and bool(d['value']) for d in triggered)
+              and any(d['feature'] in ('password_field_present', 'login_intent')
+                        and bool(d['value']) for d in triggered)):
+            threat_category = 'phishing'
+            severity = 'high'
+        elif (any(d['feature'] == 'random_domain_name' and bool(d['value']) for d in triggered)
+              and any(d['feature'] in ('password_field_present', 'login_intent')
                         and bool(d['value']) for d in triggered)):
             threat_category = 'phishing'
             severity = 'high'

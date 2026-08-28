@@ -55,6 +55,10 @@ class TrustEngine:
         {'all': ['phish_kit_url'], 'confidence': 0.95, 'label': 'phish_kit_url'},
         {'all': ['brand_in_path', 'password_field_present'], 'confidence': 0.93, 'label': 'brand_path_credential_harvest'},
         {'all': ['brand_in_path', 'form_action_domain_mismatch'], 'confidence': 0.92, 'label': 'brand_path_cross_form'},
+        {'all': ['random_domain_name', 'password_field_present'], 'confidence': 0.88, 'label': 'random_domain_credential_harvest'},
+        {'all': ['random_domain_name', 'credentials_on_unknown_target'], 'confidence': 0.9, 'label': 'random_domain_credential_theft'},
+        {'all': ['credential_keyword_in_subdomain', 'password_field_present'], 'confidence': 0.9, 'label': 'cred_subdomain_harvest'},
+        {'all': ['high_risk_tld', 'credentials_on_unknown_target'], 'confidence': 0.87, 'label': 'high_risk_tld_credential'},
     ]
 
     # Scenarios that are clearly worth a deep (stage-2) look but not a block.
@@ -82,10 +86,19 @@ class TrustEngine:
         {'all': ['url_shortener_host', 'login_intent'], 'label': 'shortener_login'},
         {'all': ['url_shortener_host', 'suspicious_path'], 'label': 'shortener_suspicious_path'},
         {'all': ['url_shortener_host', 'password_field_present'], 'label': 'shortener_credentials'},
+        {'all': ['random_domain_name', 'login_intent'], 'label': 'random_domain_login'},
+        {'all': ['random_domain_name', 'suspicious_path'], 'label': 'random_domain_suspicious_path'},
+        {'all': ['credential_keyword_in_subdomain', 'login_intent'], 'label': 'cred_subdomain_login'},
+        {'all': ['credential_keyword_in_subdomain', 'obfuscated_content'], 'label': 'cred_subdomain_obfuscated'},
+        {'all': ['high_risk_tld', 'login_intent'], 'label': 'high_risk_tld_login'},
+        {'all': ['high_risk_tld', 'suspicious_path'], 'label': 'high_risk_tld_suspicious_path'},
+        {'all': ['high_risk_tld', 'free_hosting_subdomain'], 'label': 'high_risk_tld_freehost'},
+        {'all': ['random_domain_name', 'free_hosting_subdomain'], 'label': 'random_domain_freehost'},
+        {'all': ['random_domain_name', 'high_risk_tld'], 'label': 'random_domain_high_risk_tld'},
     ]
 
     # Protective features that reduce conviction even when other weak signals fire.
-    PROTECTIVE_FEATURES = {'known_domain', 'has_https', 'public_sector_domain'}
+    PROTECTIVE_FEATURES = {'known_domain', 'has_https', 'public_sector_domain', 'safe_login_context'}
 
     def _feature_set(self, detectors: List[Dict[str, Any]]) -> set:
         out = set()
@@ -184,24 +197,28 @@ class TrustEngine:
         if block is None:
             protected = protective.intersection(self.PROTECTIVE_FEATURES)
             if protected:
-                # Known / public-sector domain + HTTPS is strong exculpatory
-                # evidence: the benign login-form case must survive weak
-                # generic signals (e.g. saral.iitjammu.ac.in/login).
-                anchor = ('known_domain' in protected) or ('public_sector_domain' in protected)
+                # Known / public-sector domains + HTTPS are strong exculpatory
+                # evidence, but a normal HTTPS login page on a legitimate domain
+                # should also survive generic signals like prompt/placeholder data.
+                anchor = ('known_domain' in protected) or ('public_sector_domain' in protected) or ('safe_login_context' in protected)
                 exculpatory = anchor and ('has_https' in protected)
                 critical = feats.intersection({
                     'hidden_login_form', 'credentials_on_unknown_target',
                     'lookalike_brand_domain', 'lookalike_domain',
                     'form_action_domain_mismatch',
                     'brand_in_path', 'phish_kit_url',
+                    'brand_impersonation', 'punycode_homoglyph',
                 })
                 if exculpatory and not critical:
                     overall = max(overall, 0.78)
+                elif 'safe_login_context' in protected and not critical:
+                    overall = max(overall, 0.82)
                 elif anchor and feats.intersection({
                     'password_field_present', 'login_intent', 'permission_requests',
                 }) and not feats.intersection({
                     'brand_impersonation', 'lookalike_brand_domain',
-                    'credentials_on_unknown_target',
+                    'credentials_on_unknown_target', 'form_action_domain_mismatch',
+                    'punycode_homoglyph', 'phish_kit_url'
                 }):
                     overall = max(overall, 0.6)
 

@@ -18,6 +18,8 @@ class AdaptiveThreatOrchestrator:
         'form_action_domain_mismatch', 'lookalike_brand_domain',
         'lookalike_domain', 'punycode_homoglyph',
         'brand_in_path', 'phish_kit_url',
+        'random_domain_name', 'credential_keyword_in_subdomain',
+        'high_risk_tld',
     }
 
     # Feature *combinations* that are critical even though each feature alone
@@ -28,6 +30,9 @@ class AdaptiveThreatOrchestrator:
         frozenset({'obfuscated_content', 'login_intent'}),
         frozenset({'hidden_elements_count', 'login_intent'}),
         frozenset({'promo_scam_keywords', 'free_hosting_subdomain'}),
+        frozenset({'random_domain_name', 'login_intent'}),
+        frozenset({'high_risk_tld', 'login_intent'}),
+        frozenset({'credential_keyword_in_subdomain', 'login_intent'}),
     }
 
     @staticmethod
