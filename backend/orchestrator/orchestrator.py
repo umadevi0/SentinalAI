@@ -22,6 +22,42 @@ class AdaptiveThreatOrchestrator:
         'high_risk_tld',
     }
 
+    # ---- credential-risk tiers -------------------------------------------
+    # Direct evidence that credentials are being harvested/exfiltrated.
+    # These are unconditional: protective evidence (HTTPS / known domain /
+    # public-sector) must never downgrade them.
+    CREDENTIAL_COMPROMISE = {
+        'credential_submission_mismatch',
+        'credentials_on_unknown_target',
+        'phish_kit_url',
+    }
+
+    # Strong signals that a login page is impersonating a legitimate brand or
+    # hiding its credential flow. On a login page these warrant deep analysis.
+    SUSPICIOUS_LOGIN = {
+        'brand_impersonation',
+        'lookalike_brand_domain',
+        'lookalike_domain',
+        'form_action_domain_mismatch',
+        'hidden_login_form',
+        'punycode_homoglyph',
+        'brand_in_path',
+    }
+
+    # Weak/contextual URL signals. Alone (without login context) these stay
+    # under normal TrustEngine handling to avoid false positives.
+    WEAK_URL_SIGNALS = {
+        'random_domain_name',
+        'high_risk_tld',
+        'credential_keyword_in_subdomain',
+        'unknown_tld',
+        'suspicious_path',
+        'credential_path_keywords',
+    }
+
+    # A page is "login context" when it collects credentials or signals intent.
+    LOGIN_CONTEXT = {'login_intent', 'password_field_present'}
+
     # Feature *combinations* that are critical even though each feature alone
     # is weak (these are exactly the combos the Trust Engine escalates to deep
     # analysis). All are gated on unprotected hosts by the evidence engine,
@@ -49,6 +85,42 @@ class AdaptiveThreatOrchestrator:
                 crit |= combo
         return crit
 
+    @staticmethod
+    def _triggered_features(evidence: Dict[str, Any]) -> set:
+        feats = set()
+        for d in evidence.get('detectors') or []:
+            if (d.get('polarity', 'positive') == 'positive'
+                    and d.get('value') and d['value'] is not False
+                    and d['value'] != 0):
+                feats.add(d.get('feature', ''))
+        return {f for f in feats if f}
+
+    def _login_risk(self, evidence: Dict[str, Any]) -> tuple:
+        """Classify a page's credential risk into (tier, label).
+
+        tier: 'compromise' | 'suspicious' | 'none'
+        Returns the tier for the strongest evidence found.
+        """
+        feats = self._triggered_features(evidence)
+
+        is_login = bool(feats & self.LOGIN_CONTEXT)
+        if not is_login:
+            return 'none', None
+
+        compromise = feats & self.CREDENTIAL_COMPROMISE
+        if compromise:
+            return 'compromise', 'credential_' + sorted(compromise)[0]
+
+        suspicious = feats & self.SUSPICIOUS_LOGIN
+        if suspicious:
+            return 'suspicious', 'login_' + sorted(suspicious)[0]
+
+        weak = feats & self.WEAK_URL_SIGNALS
+        if len(weak) >= 2:
+            return 'suspicious', 'login_multi_' + '_'.join(sorted(weak))
+
+        return 'none', None
+
     def decide(self, evidence: Dict[str, Any],
                trust_profile: Dict[str, Any],
                metadata: Dict[str, Any] | None = None,
@@ -64,40 +136,88 @@ class AdaptiveThreatOrchestrator:
         needs_deep_analysis = False
         ml_prob = None
 
+        # ---- credential-risk escalation ------------------------------------
+        # Login-aware: don't rely only on the general trust score. A page that
+        # collects credentials and shows harvesting evidence must not pass as
+        # benign just because its generic score is moderate or protective
+        # context (HTTPS / known domain) is present.
+        risk_tier, risk_label = self._login_risk(evidence)
+        critical = self._critical_features(evidence)
+
         if decision == 'block':
             action = 'block'
             stage = 1 if certainty == 'high' else 2
+            if risk_tier == 'compromise':
+                ph_conf = max(ph_conf, 0.9)
         elif decision == 'deep_analysis':
             stage = 2
             needs_deep_analysis = True
-            if predictor is not None:
+            if risk_tier == 'compromise':
+                # Direct credential-theft evidence: never let a weak ML score
+                # downgrade to 'allow' -- escalate straight to warn/block.
+                ph_conf = max(ph_conf, 0.75)
+                if ml_prob is None:
+                    action = 'warn'
+                else:
+                    action = 'block' if ml_prob >= 0.6 else 'warn'
+            elif predictor is not None:
                 try:
                     ml_prob, ml_model = predictor(evidence.get('url', ''),
                                                   metadata or {})
                 except Exception:
                     ml_prob = None
-            critical = self._critical_features(evidence)
-            if ml_prob is not None:
-                if ml_prob >= 0.75:
-                    action = 'block'
-                    ph_conf = max(ph_conf, ml_prob)
-                elif ml_prob < 0.35 and not critical:
-                    action = 'allow'
-                    ph_conf = min(ph_conf, ml_prob)
+                if ml_prob is not None:
+                    if ml_prob >= 0.75:
+                        action = 'block'
+                        ph_conf = max(ph_conf, ml_prob)
+                    elif ml_prob < 0.35 and not critical:
+                        action = 'allow'
+                        ph_conf = min(ph_conf, ml_prob)
+                    else:
+                        action = 'warn'
+                        if critical:
+                            ph_conf = max(ph_conf, 0.55)
                 else:
                     action = 'warn'
-                    if critical:
-                        ph_conf = max(ph_conf, 0.55)
             else:
                 action = 'warn'
         elif decision == 'monitor':
-            action = 'continue_monitoring'
-            stage = 2 if certainty == 'low' else 1
+            if risk_tier in ('compromise', 'suspicious'):
+                # Narrow escalation: only suspicious LOGIN pages get a second
+                # look. Ordinary pages otherwise keep monitoring.
+                stage = 2
+                needs_deep_analysis = True
+                if risk_tier == 'compromise':
+                    ph_conf = max(ph_conf, 0.7)
+                    action = 'warn'
+                elif predictor is not None:
+                    try:
+                        ml_prob, ml_model = predictor(evidence.get('url', ''),
+                                                      metadata or {})
+                    except Exception:
+                        ml_prob = None
+                    if ml_prob is not None and ml_prob >= 0.6:
+                        action = 'warn'
+                    else:
+                        action = 'continue_monitoring'
+                else:
+                    action = 'continue_monitoring'
+            else:
+                action = 'continue_monitoring'
+                stage = 2 if certainty == 'low' else 1
         else:  # allow
-            action = 'continue_monitoring'
-            stage = 1
+            if risk_tier == 'compromise':
+                # Protective evidence (HTTPS/known domain) can never suppress
+                # direct credential-theft evidence.
+                stage = 2
+                needs_deep_analysis = True
+                action = 'warn'
+                ph_conf = max(ph_conf, 0.7)
+            else:
+                action = 'continue_monitoring'
+                stage = 1
 
-        reason = matched or 'adaptive trust decision'
+        reason = matched or risk_label or 'adaptive trust decision'
         return {
             'action': action,
             'stage': stage,

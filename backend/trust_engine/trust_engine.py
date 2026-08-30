@@ -242,6 +242,18 @@ class TrustEngine:
         certainty = 'high' if block else self._uncertainty(len(triggered), trusts, overall)
 
         # ---- calibrated confidence ----------------------------------------
+        # Direct credential-theft evidence overrides the generic overall-based
+        # calibration. The overall trust score reflects protective context
+        # (HTTPS / known domain) which must NOT dilute credential-risk signal.
+        CRED_COMPROMISE = {
+            'credential_submission_mismatch', 'credentials_on_unknown_target',
+            'phish_kit_url',
+        }
+        SUSPICIOUS_LOGIN = {
+            'brand_impersonation', 'lookalike_brand_domain',
+            'lookalike_domain', 'form_action_domain_mismatch',
+            'hidden_login_form', 'punycode_homoglyph', 'brand_in_path',
+        }
         if block:
             ph_conf = block['confidence']
         else:
@@ -252,6 +264,12 @@ class TrustEngine:
             ph_conf = _clamp01((1.0 - overall) * 0.5 + positive * 0.5)
             if deep is not None:
                 ph_conf = max(ph_conf, 0.55)
+            # credential-evidence floor (independent of generic score)
+            has_login = feats.intersection({'login_intent', 'password_field_present'})
+            if feats & CRED_COMPROMISE:
+                ph_conf = max(ph_conf, 0.8)
+            elif has_login and (feats & SUSPICIOUS_LOGIN):
+                ph_conf = max(ph_conf, 0.68)
 
         reasons = [
             {'feature': d.get('feature'), 'category': d.get('category'),

@@ -775,6 +775,59 @@ def writer_thread(csv_path, result_q, done_evt, workers, stats,
         done_evt.set()
 
 
+def print_metrics(csv_path, name=''):
+    """Print a classification summary (confusion matrix + standard metrics)
+    computed from results.csv rows that have both predicted and actual.
+
+    predicted: 1 = legit, 0 = phishing (block/warn). rows without predicted or
+    actual are ignored. Respects whatever rows --max-results stopped at.
+    """
+    tp = tn = fp = fn = 0
+    labeled = 0
+    try:
+        with open(csv_path, newline='', encoding='utf-8') as f:
+            for r in csv.DictReader(f):
+                if not r.get('predicted') or not r.get('actual'):
+                    continue
+                labeled += 1
+                pred_legit = (r['predicted'] == '1')
+                act_legit = (r['actual'] == 'legit')
+                if act_legit:
+                    if pred_legit:
+                        tn += 1
+                    else:
+                        fp += 1
+                else:
+                    if pred_legit:
+                        fn += 1
+                    else:
+                        tp += 1
+    except OSError:
+        print(f'[{name}] metrics: could not read {csv_path}')
+        return
+
+    header = f'[{name}] CLASSIFICATION METRICS (labeled={labeled})' if name else \
+        f'CLASSIFICATION METRICS (labeled={labeled})'
+    print(header)
+    print('  confusion: TP={} TN={} FP={} FN={}'.format(tp, tn, fp, fn))
+    if labeled == 0:
+        print('  no labeled rows in results.csv -> metrics unavailable')
+        return
+
+    total = tp + tn + fp + fn
+    accuracy = (tp + tn) / total if total else 0.0
+    precision = tp / (tp + fp) if (tp + fp) else 0.0
+    recall = tp / (tp + fn) if (tp + fn) else 0.0
+    f1 = (2 * precision * recall / (precision + recall)
+          if (precision + recall) else 0.0)
+    specificity = tn / (tn + fp) if (tn + fp) else 0.0
+    print(f'  Accuracy   = {accuracy:.4f}  ({tp + tn}/{total})')
+    print(f'  Precision  = {precision:.4f}  TP/(TP+FP)')
+    print(f'  Recall     = {recall:.4f}  TP/(TP+FN)')
+    print(f'  F1-score   = {f1:.4f}')
+    print(f'  Specificity= {specificity:.4f}  TN/(TN+FP)')
+
+
 def run_backend(name, items, has_labels, workers_count, nav_timeout_ms,
                 csv_path, max_results=0):
     port = free_port(BACKENDS[name]['base_port'])
@@ -833,6 +886,8 @@ def run_backend(name, items, has_labels, workers_count, nav_timeout_ms,
     if has_labels and summary:
         line += f' | agreement with actual: {correct}/{summary}'
     print(line + ')')
+    if has_labels and summary:
+        print_metrics(csv_path, name=name)
 
 
 def main():
