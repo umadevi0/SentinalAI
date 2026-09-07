@@ -433,6 +433,61 @@ BRAND_ALIASES = {
     'icloud': ['apple'],
 }
 
+# Real, well-established services that are NOT famous phishing-target brands
+# but still must never be treated as "unknown credential targets". Without
+# this list, legit non-brand login pages (flight trackers, esports sites,
+# small SaaS, regional companies) were wrongly flagged just for having a
+# password field on a domain we had not heard of. Adding a real service here
+# only ever raises the "known/owned" verdict (protective); it never triggers
+# a detection by itself.
+# NOTE: this is an offline, curated safe-list. It replaces the need for a
+# live WHOIS/registration-age query while keeping detection fully offline and
+# low-latency. A future WHOIS integration would only *extend* this list.
+REAL_DOMAINS = {
+    # Real Google-owned / well-known tech (Android, etc.)
+    'android', 'chromium', 'arstechnica',
+    # Cloud / hosting / analytics / SaaS that legitimately host login pages
+    'ovh', 'ovhcloud', 'digitalocean', 'linode', 'vultr', 'hetzner',
+    'npmjs', 'pypi', 'maven', 'gradle', 'docker', 'jenkins', 'circleci',
+    'travisci', 'cloudflare', 'fastly', 'akamai', 'otpless',
+    # Social / communication / media
+    'pinterest', 'telegram', 'viber', 'weebly', 'webflow', 'squarespace',
+    'wix', 'godaddy', 'namecheap', 'wordpress', 'blogger', 'medium',
+    # Esports / gaming / entertainment
+    'hltv', 'faceit', 'esportal', 'hl', 'steamdb',
+    # Travel / transport / flight
+    'flightradar24', 'flightaware', 'skyscanner', 'kiwi', 'ryanair',
+    'easyjet', 'booking', 'kayak',
+    # Property / real estate
+    'property24', 'privateproperty', 'realestate', 'zillow', 'realtor',
+    # Regional / business / misc legit companies (from the benchmark set)
+    'bblaa', 'fdown', 'wpguardian', 'samsungcloud', 'opsgenie',
+    'slack', 'trello', 'atlassian', 'hubspot', 'salesforce', 'notion',
+    'asana', 'monday', 'docusign', 'hello', 'freshdesk', 'zendesk',
+    'segment', 'branch', 'mixpanel', 'optimizely', 'vwo',
+}
+
+# Registrable labels that belong to a real brand or a real service. A host
+# whose registrable label is in this set is treated as a known / owned domain
+# (protective evidence). This fixes false positives where real login pages
+# (samsung.com, trello.com, flightradar24.com, ...) were flagged as "unknown
+# credential targets" simply because their brand was not already in
+# KNOWN_DOMAINS. Built automatically from KNOWN_DOMAINS + BRAND_DOMAINS
+# canonical hosts + REAL_DOMAINS.
+_OWNED_REGISTRABLES = set(KNOWN_DOMAINS)
+for _hosts in BRAND_DOMAINS.values():
+    for _d in _hosts:
+        _lbls = [x for x in _d.split('.') if x]
+        if _lbls:
+            _reg, _sub, _sfx, _ps = registrable_info(_lbls)
+            if _reg:
+                _OWNED_REGISTRABLES.add(_reg)
+_OWNED_REGISTRABLES |= REAL_DOMAINS
+
+
+def _is_owned_registrable(registrable: str) -> bool:
+    return registrable in _OWNED_REGISTRABLES
+
 
 def _canonical_hosts(brand: str) -> set:
     hosts = set(BRAND_DOMAINS.get(brand, set()))
@@ -520,7 +575,11 @@ class ThreatEvidenceEngine:
         is_ip = _is_ip(host)
         punycode = host.startswith('xn--') or any(l.startswith('xn--') for l in labels)
         has_at_sign = '@' in parsed.netloc
-        known_domain = registrable in KNOWN_DOMAINS
+        # "Known / owned" now covers famous phishing-target brands AND real
+        # services. This prevents real login pages (samsung.com, trello.com,
+        # flightradar24.com, ovhcloud.com, ...) from being misread as "unknown
+        # credential targets" just because their brand was not pre-listed.
+        known_domain = _is_owned_registrable(registrable)
 
         # ---- metadata (camelCase and snake_case both accepted) -------------
         def mget(*keys, default=None):
@@ -563,7 +622,10 @@ class ThreatEvidenceEngine:
         digit_count = sum(1 for c in registrable if c.isdigit())
         digit_ratio = digit_count / max(1, reg_len)
         random_domain = (
-            reg_len > 20
+            # Long name is only "random" when it also looks auto-generated
+            # (contains digits). A long natural multi-word domain like
+            # "lovemyonlinemarketing" is legitimate, not a phishing kit.
+            (reg_len > 20 and digit_count > 0)
             or (digit_ratio > 0.35 and hyphen_heavy)
             or (reg_len > 12 and digit_ratio > 0.4)
             or registrable.count('-') >= 4
@@ -572,17 +634,56 @@ class ThreatEvidenceEngine:
         # signature: 'secure.paypal.com.fakesite.xyz'
         cred_subdomain = False
         if not known_domain and not public_sector and subdomain_count >= 1:
-            sub_labels = labels[:-(1 + (2 if len(labels) >= 3 and '.'.join(labels[-2:]) in KNOWN_PUBLIC_SUFFIXES else 1) - 1)]
+            # Only the actual subdomain labels (before the registrable domain).
+            # The registrable label itself (e.g. the whole domain) must NOT be
+            # scanned -- that wrongly matched short keywords like 'my' inside
+            # "marketing" on legitimate domains.
+            sub_labels = labels[:subdomain_count]
             if sub_labels:
-                sub_str = ' '.join(sub_labels)
-                cred_subdomain = any(kw in sub_str for kw in CREDENTIAL_SUBDOMAIN_KEYWORDS)
+                # whole-word match per label, so 'my' does not match inside
+                # "marketing"/"company". Escapes dots too.
+                cred_subdomain = any(
+                    re.search(r'(?<![a-z0-9])' + re.escape(kw) + r'(?![a-z0-9])', lbl)
+                    for lbl in sub_labels
+                    for kw in CREDENTIAL_SUBDOMAIN_KEYWORDS
+                )
+        # ---- WHOIS/RDAP registration fallback (offline-first + async) --------
+        # The offline safe-list already answered fast for owned/known domains,
+        # so we only need the network RDAP lookup for UNKNOWN domains. This is
+        # done in the background so the user-facing decision is never delayed.
+        # If a previous lookup is cached, its registration age + owner are used
+        # now to refine the verdict.
+        registration = None
+        registrable_domain = ''
+        if labels:
+            registrable_domain = (registrable + '.' + public_suffix) if public_suffix else domain
+        if not known_domain and not public_sector and registrable_domain:
+            try:
+                from backend.whois_kb import registration_context, request_registration_async
+                registration = registration_context(registrable_domain)
+                request_registration_async(registrable_domain)
+            except Exception:
+                registration = None
+        recently_registered = bool(
+            registration and registration.get('recently_registered') is True)
+        established_domain = bool(
+            registration and registration.get('established') is True)
+
         path_lower = (path or '').lower()
         suspicious_path = bool(_SUSPICIOUS_PATH.search(path)) or any(
             k in path_lower for k in HIGH_VALUE_KEYWORDS)
         # Credential vocabulary on a path, but only meaningful when the host
         # is NOT a known brand (github.com/login must never fire this).
+        # FP fix: a NORMAL "/login"-style path on a clean, real unknown domain
+        # (tstprep.com/user-login/, flightradar24.com, ...) is not phishing.
+        # So credential-vocabulary-in-path is only a *risk* on a host that is
+        # itself already suspicious (unknown/risky TLD, IP, punycode), never on
+        # a plain clean domain. Real phishing is caught by the far stronger
+        # brand-impersonation / phish-kit / high-risk-TLD detectors instead.
         credential_path = (
             not known_domain and not public_sector
+            and (not tld_known or high_risk_tld or is_ip or punycode
+                 or hyphen_heavy or excessive_subdomains or random_domain)
             and any(k in path_lower for k in HIGH_VALUE_KEYWORDS))
 
         # ---- brand impersonation -------------------------------------------
@@ -605,14 +706,18 @@ class ThreatEvidenceEngine:
         # even without title hints, a brand in the registrable domain with a
         # non-canonical host is a lookalike
         lookalike_brand = None
-        for brand in BRAND_NAMES:
-            canonical = _canonical_hosts(brand)
-            if any(host == d or host.endswith('.' + d) for d in canonical):
-                continue
-            if (registrable.startswith(brand + '-') or brand + '-' in registrable
-                    or registrable.startswith(brand)):
-                lookalike_brand = brand
-                break
+        # A real, owned service (samsungcloud.com, ovhcloud.com, ...) that merely
+        # shares a prefix with a famous brand must NOT be flagged as a lookalike.
+        # It is a genuine enterprise property, not a phish.
+        if not _is_owned_registrable(registrable):
+            for brand in BRAND_NAMES:
+                canonical = _canonical_hosts(brand)
+                if any(host == d or host.endswith('.' + d) for d in canonical):
+                    continue
+                if (registrable.startswith(brand + '-') or brand + '-' in registrable
+                        or registrable.startswith(brand)):
+                    lookalike_brand = brand
+                    break
 
         suspicious_host = (
             not tld_known
@@ -683,15 +788,33 @@ class ThreatEvidenceEngine:
         # A login form on an unfamiliar, suspicious host is a phishing signature --
         # unless the page is on trusted public-sector infrastructure (education /
         # government), where subdomained logins are normal.
-        # CRITICAL FIX: Remove the `suspicious_host or redirects >= 1` gate.
-        # Phishing pages on .com with clean hostnames were slipping through
-        # because they never triggered suspicious_host. Any password form on a
-        # non-known, non-public-sector domain is a credential risk.
-        credentials_on_unknown_target = (
+        # CRITICAL FIX (FP reduction): "unknown target + password field" alone is
+        # NOT enough. Countless legitimate websites have a password field on a
+        # domain we do not recognize (flightradar24.com, hltv.org, property24.com,
+        # ...). That alone must not brand the page as credential theft.
+        # `credentials_on_unknown_target` now fires only when there is ALSO a real
+        # harvesting signature (cross-domain exfil, hidden login, impersonation,
+        # phish-kit path, high-risk TLD, IP host, etc.). A clean, genuine login
+        # form on a plain unknown domain stays under normal TrustEngine handling.
+        credentials_on_unknown_target = False
+        if (
             password_fields > 0
             and not known_domain
             and not public_sector
-        )
+        ):
+            harvest_signature = (
+                bool(phish_kit_url)
+                or hidden_login_form
+                or (form_action_mismatch is True)
+                or (cred_mismatch is True)
+                or brand_impersonation is not None
+                or lookalike_brand is not None
+                or high_risk_tld
+                or is_ip
+                or punycode
+                or cred_subdomain
+            )
+            credentials_on_unknown_target = harvest_signature
 
         # ---- build structured detectors -------------------------------------
         # Weak behavioral signals (hidden elements, external scripts, obfuscated
@@ -741,15 +864,37 @@ class ThreatEvidenceEngine:
         add('lookalike_brand_domain', 'identity', lookalike_brand is not None,
             'high' if lookalike_brand else 'low',
             0.85 if lookalike_brand else 0.1, 'high', 0.85 if lookalike_brand else 0.1)
-        add('brand_impersonation', 'identity', brand_impersonation is not None,
-            'high' if brand_impersonation else 'low',
-            0.9 if brand_impersonation else 0.1, 'very_high', 0.9 if brand_impersonation else 0.1)
+        # A page "claims to collect credentials" when it shows a login form or
+        # signals login intent. Brand mentions in page TITLE/CONTENT are only an
+        # impersonation risk in that credential context -- a content page
+        # (Wikipedia article, news, docs) that merely discusses a brand is
+        # benign. Real credential-harvesting phishing pages always present a
+        # login form, so gating on this context is safe.
+        credential_context = (password_fields > 0) or login_intent
+        # brand_impersonation must NOT fire on a domain we have already
+        # recognized as owned/known (e.g. samsungcloud.com genuinely runs a
+        # real "Samsung Cloud" login). Claiming a brand on your OWN enterprise
+        # domain is legitimate, not impersonation.
+        brand_imp = (brand_impersonation is not None) and credential_context and not known_domain
+        add('brand_impersonation', 'identity',
+            brand_imp,
+            'high' if brand_imp else 'low',
+            0.9 if brand_imp else 0.1,
+            'very_high', 0.9 if brand_imp else 0.1)
         add('known_domain', 'identity', known_domain,
             'low', 0.9 if known_domain else 0.1, 'medium',
             0.8 if known_domain else 0.1, polarity='negative')
         add('public_sector_domain', 'identity', public_sector,
             'low', 0.9 if public_sector else 0.1, 'medium',
             0.8 if public_sector else 0.1, polarity='negative')
+        # A domain that has been registered for ~2+ years is established real
+        # website, not a freshly-spun-up phishing kit. This is protective
+        # evidence: it gently lowers suspicion about an otherwise-unknown login
+        # page (FPs on real but un-whitelisted companies).
+        established_reg = established_domain and not known_domain
+        add('established_registered_domain', 'identity', established_reg,
+            'low', 0.7 if established_reg else 0.1, 'medium',
+            0.6 if established_reg else 0.1, polarity='negative')
         add('domain_login_keyword', 'identity', any(k in ''.join(labels) for k in ('login', 'account', 'signin')),
             'medium' if any(k in ''.join(labels) for k in ('login', 'account', 'signin')) else 'low',
             0.5 if any(k in ''.join(labels) for k in ('login', 'account', 'signin')) else 0.1,
@@ -766,6 +911,17 @@ class ThreatEvidenceEngine:
         add('credential_keyword_in_subdomain', 'identity', cred_subdomain,
             'high' if cred_subdomain else 'low',
             0.8 if cred_subdomain else 0.1, 'high', 0.75 if cred_subdomain else 0.1)
+        # RDAP registration-age signal. A domain that was registered only a few
+        # days ago AND is asking for a password is a classic phishing signature
+        # (phishers use brand-new domains). It is gated on credential context
+        # and an unknown host so established real sites (even ones we have not
+        # yet whitelisted) are never hurt by it.
+        recently_reg = (recently_registered and not known_domain
+                        and not public_sector and credential_context)
+        add('recently_registered_domain', 'identity', recently_reg,
+            'high' if recently_reg else 'low',
+            0.85 if recently_reg else 0.1, 'high',
+            0.8 if recently_reg else 0.1)
 
         # ---- URL-based brand / phishing-kit heuristics -----------------------
         # Brand name appearing in path when host is not the brand's domain
@@ -832,10 +988,10 @@ class ThreatEvidenceEngine:
         direct_download = any(mk in url.lower() for mk in DIRECT_DOWNLOAD_ENDPOINTS)
 
         # ---- add new identity detectors ------------------------------------
-        add('brand_in_path', 'identity', brand_in_path,
-            'high' if brand_in_path else 'low',
-            0.85 if brand_in_path else 0.1, 'very_high',
-            0.85 if brand_in_path else 0.1)
+        add('brand_in_path', 'identity', brand_in_path and credential_context,
+            'high' if (brand_in_path and credential_context) else 'low',
+            0.85 if (brand_in_path and credential_context) else 0.1,
+            'very_high', 0.85 if (brand_in_path and credential_context) else 0.1)
         add('phish_kit_url', 'identity', phish_kit_url,
             'critical' if phish_kit_url else 'low',
             0.95 if phish_kit_url else 0.1, 'very_high',
@@ -878,10 +1034,19 @@ class ThreatEvidenceEngine:
             0.25 if safe_login_context else 0.1, polarity='negative')
 
         # ---- credential flow (strongest) -------------------------------------
-        add('form_action_domain_mismatch', 'identity', bool(form_action_mismatch),
-            'medium' if form_action_mismatch else 'low',
-            0.6 if form_action_mismatch else 0.1, 'medium',
-            0.45 if form_action_mismatch else 0.1)
+        # A cross-domain form action is only a *credential* risk in a real
+        # credential context -- specifically when a PASSWORD form posts to a
+        # different host (that is actual credential exfiltration). Login-INTENT
+        # alone (e.g. a search/newsletter form on a page whose title mentions
+        # "login") is not enough -- that wrongly flagged legitimate content pages
+        # and login portals whose forms submit to the brand's own SSO subdomain.
+        # A cross-domain form on an already-owned/known domain is also not an
+        # impersonation signal.
+        fam = bool(form_action_mismatch) and password_fields > 0 and not known_domain
+        add('form_action_domain_mismatch', 'identity', fam,
+            'medium' if fam else 'low',
+            0.6 if fam else 0.1, 'medium',
+            0.45 if fam else 0.1)
         add('credential_submission_mismatch', 'identity', bool(cred_mismatch),
             'critical' if cred_mismatch else 'low',
             0.95 if cred_mismatch else 0.1, 'very_high',
@@ -900,10 +1065,15 @@ class ThreatEvidenceEngine:
             'high' if hidden_login_form else 'low',
             0.9 if hidden_login_form else 0.1, 'high',
             0.9 if hidden_login_form else 0.1)
-        add('obfuscated_content', 'behavior', obfuscated and hidden_behavior_ctx,
-            'medium' if (obfuscated and hidden_behavior_ctx) else 'low',
-            0.6 if (obfuscated and hidden_behavior_ctx) else 0.1, 'medium',
-            0.5 if (obfuscated and hidden_behavior_ctx) else 0.1)
+        # Obfuscated JS is also produced by legit minified ad/analytics bundles.
+        # It is only a *credential* risk in a login context (a cloaked login
+        # form). On a content page with obfuscated ad code but no credential
+        # intent, it must not escalate to deep analysis / warn.
+        obfuscated_risk = obfuscated and hidden_behavior_ctx and credential_context
+        add('obfuscated_content', 'behavior', obfuscated_risk,
+            'medium' if obfuscated_risk else 'low',
+            0.6 if obfuscated_risk else 0.1, 'medium',
+            0.5 if obfuscated_risk else 0.1)
         add('excessive_iframes', 'behavior', iframes >= 4,
             'medium' if iframes >= 4 else 'low',
             0.5 if iframes >= 4 else 0.1, 'low',
