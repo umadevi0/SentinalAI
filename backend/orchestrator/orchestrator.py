@@ -42,6 +42,7 @@ class AdaptiveThreatOrchestrator:
         'hidden_login_form',
         'punycode_homoglyph',
         'brand_in_path',
+        'claimed_brand_in_url',
     }
 
     # Weak/contextual URL signals. Alone (without login context) these stay
@@ -203,8 +204,31 @@ class AdaptiveThreatOrchestrator:
                 else:
                     action = 'continue_monitoring'
             else:
-                action = 'continue_monitoring'
-                stage = 2 if certainty == 'low' else 1
+                # NEW: Credential-aware escalation for login pages on unprotected hosts.
+                # If the page collects credentials (login context) AND lacks protective
+                # features (known domain, public sector, established RDAP domain),
+                # escalate from continue_monitoring to warn. This catches phishing
+                # on unknown hosts that would otherwise fly under the radar.
+                feats = self._triggered_features(evidence)
+                has_login = bool(feats & self.LOGIN_CONTEXT)
+                has_protection = bool(feats & {
+                    'known_domain', 'public_sector_domain', 'established_registered_domain', 'safe_login_context'
+                })
+                if has_login and not has_protection:
+                    # Check for any weak risk signal to avoid escalating clean unknowns
+                    has_weak_risk = bool(feats & self.WEAK_URL_SIGNALS)
+                    has_suspicious_login = bool(feats & self.SUSPICIOUS_LOGIN)
+                    if has_weak_risk or has_suspicious_login:
+                        stage = 2
+                        needs_deep_analysis = True
+                        action = 'warn'
+                        ph_conf = max(ph_conf, 0.5)
+                    else:
+                        action = 'continue_monitoring'
+                        stage = 2 if certainty == 'low' else 1
+                else:
+                    action = 'continue_monitoring'
+                    stage = 2 if certainty == 'low' else 1
         else:  # allow
             if risk_tier == 'compromise':
                 # Protective evidence (HTTPS/known domain) can never suppress

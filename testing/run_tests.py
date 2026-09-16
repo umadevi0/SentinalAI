@@ -828,11 +828,35 @@ def print_metrics(csv_path, name=''):
     print(f'  Specificity= {specificity:.4f}  TN/(TN+FP)')
 
 
+def warm_rdap_cache(base_url, items):
+    """Pre-warm the RDAP registration cache by making dummy analyze calls.
+    This fires async RDAP lookups in the backend for all unique hosts."""
+    import urllib.parse
+    hosts = set()
+    for item in items:
+        host = urllib.parse.urlparse(item['url']).hostname or ''
+        if host:
+            hosts.add(host)
+    print(f'  [RDAP warm-up] {len(hosts)} unique hosts -> firing async lookups...')
+    for host in sorted(hosts):
+        try:
+            http_json(base_url + '/api/analyze',
+                      payload={'url': f'http://{host}/', 'metadata': {}},
+                      timeout=10)
+        except Exception:
+            pass
+    # Give background threads time to populate cache
+    time.sleep(3)
+    print(f'  [RDAP warm-up] done')
+
+
 def run_backend(name, items, has_labels, workers_count, nav_timeout_ms,
-                csv_path, max_results=0):
+                csv_path, max_results=0, warm_rdap=False):
     port = free_port(BACKENDS[name]['base_port'])
     print(f'[{name}] starting backend on :{port} ({BACKENDS[name]["dir"]})')
     server, base = start_server(name, port)
+    if warm_rdap:
+        warm_rdap_cache(base, items)
     task_q, result_q = Queue(), Queue()
     stop_evt = MPEvent()  # mp.Event: must survive pickling to worker procs
     procs = []
@@ -900,6 +924,7 @@ def main():
                     help='stop the test once results.csv holds this many '
                          'rows (default 50; 0 = run every URL)')
     ap.add_argument('--output', default=os.path.join(ROOT, 'testing', 'results.csv'))
+    ap.add_argument('--warm-rdap', action='store_true',
     args = ap.parse_args()
 
     items, has_labels = load_rows(args.input)
@@ -908,9 +933,11 @@ def main():
         sys.exit(1)
     print(f'{len(items)} URLs | backend={args.backends} | workers={args.workers}'
           f' | stop after {args.max_results or "all"} result row(s)'
-          f' | label column: {"detected" if has_labels else "not found (actual blank)"}')
+          f' | label column: {"detected" if has_labels else "not found (actual blank)"}'
+          f' | warm-rdap: {args.warm_rdap}')
     run_backend(args.backends, items, has_labels, args.workers,
-                args.timeout_ms, args.output, max_results=args.max_results)
+                args.timeout_ms, args.output, max_results=args.max_results,
+                warm_rdap=args.warm_rdap)
 
 
 if __name__ == '__main__':

@@ -714,9 +714,42 @@ class ThreatEvidenceEngine:
                 canonical = _canonical_hosts(brand)
                 if any(host == d or host.endswith('.' + d) for d in canonical):
                     continue
-                if (registrable.startswith(brand + '-') or brand + '-' in registrable
-                        or registrable.startswith(brand)):
+                # Match brand at label boundaries in registrable or subdomain labels.
+                # Also match brand as prefix of the registrable (catches paypalverify.com).
+                # This catches: login-paypal.com, verifypaypal.com, paypalverify.com, paypal.somesite.com, etc.
+                brand_pattern = r'(?:^|[.-])' + re.escape(brand) + r'(?:[.-]|$)'
+                if re.search(brand_pattern, registrable) or registrable.startswith(brand):
                     lookalike_brand = brand
+                    break
+                # Also check subdomain labels with label-boundary regex AND prefix match
+                for lbl in labels[:subdomain_count]:
+                    if re.search(brand_pattern, lbl) or lbl.startswith(brand):
+                        lookalike_brand = brand
+                        break
+                if lookalike_brand:
+                    break
+
+# NEW: claimed_brand_in_url - brand token appears anywhere in the host/path
+        # on an unknown, non-owned domain. This catches brand impersonation even
+        # when the page title is generic (no title-based brand_impersonation).
+        claimed_brand_in_url = None
+        if not _is_owned_registrable(registrable):
+            for brand in BRAND_NAMES:
+                canonical = _canonical_hosts(brand)
+                if any(host == d or host.endswith('.' + d) for d in canonical):
+                    continue
+                # Match brand at label boundaries, plus prefix/suffix of registrable
+                # and prefix of subdomain labels.
+                brand_pattern = r'(?:^|[.-])' + re.escape(brand) + r'(?:[.-]|$)'
+                host_match = (re.search(brand_pattern, host) or re.search(brand_pattern, path_lower)
+                              or registrable.startswith(brand) or registrable.endswith(brand))
+                # Also check subdomain labels for prefix match
+                for lbl in labels[:subdomain_count]:
+                    if lbl.startswith(brand):
+                        host_match = True
+                        break
+                if host_match:
+                    claimed_brand_in_url = brand
                     break
 
         suspicious_host = (
@@ -778,6 +811,7 @@ class ThreatEvidenceEngine:
             and not form_action_mismatch
             and not cred_mismatch
             and not lookalike_brand
+            and not claimed_brand_in_url
             and not phish_kit_url
             and not punycode
         )
@@ -809,6 +843,7 @@ class ThreatEvidenceEngine:
                 or (cred_mismatch is True)
                 or brand_impersonation is not None
                 or lookalike_brand is not None
+                or claimed_brand_in_url is not None
                 or high_risk_tld
                 or is_ip
                 or punycode
@@ -864,6 +899,9 @@ class ThreatEvidenceEngine:
         add('lookalike_brand_domain', 'identity', lookalike_brand is not None,
             'high' if lookalike_brand else 'low',
             0.85 if lookalike_brand else 0.1, 'high', 0.85 if lookalike_brand else 0.1)
+        add('claimed_brand_in_url', 'identity', claimed_brand_in_url is not None,
+            'high' if claimed_brand_in_url else 'low',
+            0.88 if claimed_brand_in_url else 0.1, 'very_high', 0.88 if claimed_brand_in_url else 0.1)
         # A page "claims to collect credentials" when it shows a login form or
         # signals login intent. Brand mentions in page TITLE/CONTENT are only an
         # impersonation risk in that credential context -- a content page
