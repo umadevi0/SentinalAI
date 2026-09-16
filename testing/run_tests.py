@@ -925,6 +925,7 @@ def main():
                          'rows (default 50; 0 = run every URL)')
     ap.add_argument('--output', default=os.path.join(ROOT, 'testing', 'results.csv'))
     ap.add_argument('--warm-rdap', action='store_true',
+                    help='pre-warm RDAP registration cache for all hosts (improves first-visit accuracy)')
     args = ap.parse_args()
 
     items, has_labels = load_rows(args.input)
