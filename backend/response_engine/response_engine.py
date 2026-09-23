@@ -3,7 +3,7 @@ from typing import Any, Dict
 
 class ResponseEngine:
     def execute(self, decision: Dict[str, Any]) -> Dict[str, Any]:
-        action = decision.get('action', 'continue_monitoring')
+        action = decision.get('action', 'legit')
         return {
             'action': action,
             'status': 'enforced',

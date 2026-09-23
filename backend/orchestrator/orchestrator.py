@@ -133,7 +133,7 @@ class AdaptiveThreatOrchestrator:
         matched = trust_profile.get('matched_rule')
 
         stage = 1
-        action = 'continue_monitoring'
+        action = 'legit'
         needs_deep_analysis = False
         ml_prob = None
 
@@ -200,14 +200,14 @@ class AdaptiveThreatOrchestrator:
                     if ml_prob is not None and ml_prob >= 0.6:
                         action = 'warn'
                     else:
-                        action = 'continue_monitoring'
+                        action = 'legit'
                 else:
-                    action = 'continue_monitoring'
+                    action = 'legit'
             else:
                 # NEW: Credential-aware escalation for login pages on unprotected hosts.
                 # If the page collects credentials (login context) AND lacks protective
                 # features (known domain, public sector, established RDAP domain),
-                # escalate from continue_monitoring to warn. This catches phishing
+                # escalate from legit to warn. This catches phishing
                 # on unknown hosts that would otherwise fly under the radar.
                 feats = self._triggered_features(evidence)
                 has_login = bool(feats & self.LOGIN_CONTEXT)
@@ -224,10 +224,10 @@ class AdaptiveThreatOrchestrator:
                         action = 'warn'
                         ph_conf = max(ph_conf, 0.5)
                     else:
-                        action = 'continue_monitoring'
+                        action = 'legit'
                         stage = 2 if certainty == 'low' else 1
                 else:
-                    action = 'continue_monitoring'
+                    action = 'legit'
                     stage = 2 if certainty == 'low' else 1
         else:  # allow
             if risk_tier == 'compromise':
@@ -238,7 +238,7 @@ class AdaptiveThreatOrchestrator:
                 action = 'warn'
                 ph_conf = max(ph_conf, 0.7)
             else:
-                action = 'continue_monitoring'
+                action = 'legit'
                 stage = 1
 
         reason = matched or risk_label or 'adaptive trust decision'

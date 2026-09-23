@@ -58,7 +58,7 @@ async function analyze(payload) {
         data.timing_ms = { roundtrip_ms: elapsed };
       }
       const action = data?.decision?.action;
-      const tier = action === 'block' ? 'high' : action === 'continue_monitoring' ? 'low' : 'ambiguous';
+      const tier = action === 'block' ? 'high' : action === 'legit' ? 'low' : 'ambiguous';
       store[key] = { ts: Date.now(), data, tier };
       setCache(store);
       return { ok: response.ok, data };

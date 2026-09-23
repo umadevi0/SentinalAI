@@ -106,9 +106,9 @@ LABEL_HEADER_HINTS = {'label', 'labels', 'actual', 'actual_answer', 'ground_trut
                       'truth', 'class', 'target', 'verdict', 'result', 'legit',
                       'is_legit', 'phishing', 'category'}
 PHISHING_VALUES = {'phishing', 'phish', 'bad', 'malicious', 'malware', 'scam',
-                   'fraud', 'attack', 'unsafe', '0'}
+                   'fraud', 'attack', 'unsafe', '0','phish_id'}
 LEGIT_VALUES = {'legit', 'legitimate', 'benign', 'safe', 'good', 'ham',
-                'trusted', 'normal', 'ok', '1'}
+                'trusted', 'normal', 'ok', '1.0'}
 
 SNAPSHOT_JS = r"""
 () => {
