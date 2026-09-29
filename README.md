@@ -1,6 +1,6 @@
 # SentinelAI
 
-SentinelAI is a browser security runtime scaffold aligned to the PDF specification.
+SentinelAI, a lightweight zero-trust framework for adaptive credential protection at the browser edge. SentinelAI verifies the relationship between webpage identity and credential destination and performs local or backend analysis according to the observed risk. 
 
 ## Project layout
 
